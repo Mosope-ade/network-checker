@@ -69,8 +69,12 @@ Rebuilding the binary removes that capability. The GUI server itself does not re
 The original gateway → Internet → DNS console monitor remains available:
 
 ```sh
+cp config/monitor.example.toml config/monitor.toml
+# Edit config/monitor.toml: set gateway.address, internet.targets, and dns.hostname.
 cargo run -- --daemon --config config/monitor.toml
 ```
+
+The shipped example contains no selected targets and cannot start monitoring until you configure it. Machine-specific `config/*.toml` files are ignored by Git; only the example is tracked. Do not force-add local target configuration or notification credentials.
 
 This mode reads the legacy TOML configuration and logs hierarchical checks and local gateway diagnostics. Its configuration is separate from GUI targets. The alert fields in that TOML belong to the earlier roadmap; desktop and Telegram notification delivery are not implemented. The GUI's SQLite incident logging is used in GUI mode.
 

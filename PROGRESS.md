@@ -33,3 +33,7 @@ A target is one host IP representing a network. This version uses the host machi
 - Real-ping API smoke test passed, including IPv4, IPv6, concurrent healthy/unreachable targets, pause/resume, restart persistence, retained incidents, CSV, invalid/duplicate input, and Host/Origin protection.
 - Headless Google Chrome browser checks passed for bulk add, real status updates, latency bars, pause/resume, removal/cancellation, search, CSV download, HTML escaping, dialog focus, keyboard tabs, and 320/768/1024/1440px layouts, with zero console errors or warnings.
 - Desktop, narrow-screen, and add-dialog screenshots were visually inspected. This is Chrome verification; Firefox and Safari have not been tested.
+
+## Configuration hygiene correction — 2026-11-12
+
+Removed the tracked machine-specific daemon configuration. Only `config/monitor.example.toml` is shipped; it requires explicit gateway, external ping targets, and DNS hostname before daemon monitoring can start. Local TOML configurations are ignored, and missing configuration produces setup instructions. GUI targets remain user-supplied and initially empty. Regression tests cover refusal to run the unconfigured example, preservation of explicit targets, rejection of empty external targets, and missing-file guidance.

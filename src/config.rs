@@ -5,6 +5,9 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
+    #[error("configuration file not found: {0}. Copy config/monitor.example.toml to this path and explicitly configure gateway.address, internet.targets, and dns.hostname before starting daemon mode")]
+    MissingFile(String),
+
     #[error("failed to read config file: {0}")]
     ReadFile(#[from] std::io::Error),
 
@@ -81,7 +84,13 @@ pub struct TelegramAlertConfig {
 impl Config {
     /// Load and validate configuration from a TOML file.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
-        let contents = std::fs::read_to_string(path)?;
+        let contents = std::fs::read_to_string(path).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                ConfigError::MissingFile(path.display().to_string())
+            } else {
+                ConfigError::ReadFile(error)
+            }
+        })?;
         let config: Config = toml::from_str(&contents)?;
         config.validate()?;
         Ok(config)
@@ -128,5 +137,53 @@ impl Config {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const EXAMPLE: &str = include_str!("../config/monitor.example.toml");
+
+    fn configured_example() -> String {
+        EXAMPLE
+            .replace("# address = \"YOUR_GATEWAY_IP\"", "address = \"::1\"")
+            .replace("targets = []", "targets = [\"2001:db8::1\"]")
+            .replace("hostname = \"\"", "hostname = \"example.invalid\"")
+    }
+
+    #[test]
+    fn explicit_targets_are_required_and_preserved() {
+        let config: Config = toml::from_str(&configured_example()).unwrap();
+        config.validate().unwrap();
+        assert_eq!(config.gateway.address, "::1".parse::<IpAddr>().unwrap());
+        assert_eq!(
+            config.internet.targets,
+            vec!["2001:db8::1".parse::<IpAddr>().unwrap()]
+        );
+        assert_eq!(config.dns.hostname, "example.invalid");
+        let config: Config = toml::from_str(
+            &configured_example().replace("targets = [\"2001:db8::1\"]", "targets = []"),
+        )
+        .unwrap();
+        assert!(matches!(config.validate(), Err(ConfigError::Validation(_))));
+    }
+
+    #[test]
+    fn missing_config_returns_setup_instructions() {
+        let error = Config::load(Path::new("/nonexistent-netcheck-test/config.toml")).unwrap_err();
+        assert!(matches!(error, ConfigError::MissingFile(_)));
+        assert!(error.to_string().contains("monitor.example.toml"));
+        assert!(error.to_string().contains("gateway.address"));
+    }
+
+    #[test]
+    fn shipped_config_cannot_monitor_without_explicit_target_configuration() {
+        let parsed = toml::from_str::<Config>(include_str!("../config/monitor.example.toml"));
+        assert!(
+            parsed.is_err(),
+            "The shipped configuration must not select monitoring targets for the user"
+        );
     }
 }

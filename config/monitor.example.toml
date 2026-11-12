@@ -1,0 +1,28 @@
+# Copy this file to config/monitor.toml, then configure your own targets.
+# This example intentionally cannot start monitoring until configured.
+
+[monitor]
+interval = 5
+failure_threshold = 3
+recovery_threshold = 3
+
+[gateway]
+# Required: uncomment and replace with your own gateway's IPv4 or IPv6 address.
+# address = "YOUR_GATEWAY_IP"
+
+[internet]
+# Required: add the external IP addresses you explicitly want to probe.
+targets = []
+
+[dns]
+# Required: set the hostname you want to use for DNS checks.
+hostname = ""
+
+# Notification delivery is not implemented; leave these disabled.
+[alerts.system]
+enabled = false
+
+[alerts.telegram]
+enabled = false
+bot_token = ""
+chat_id = ""

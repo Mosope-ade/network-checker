@@ -5,3 +5,7 @@ plan.md
 /data/
 
 /node_modules/
+
+# Machine-specific targets and optional notification credentials
+/config/*.toml
+!/config/monitor.example.toml
