@@ -164,7 +164,7 @@ async fn protect(
 
 async fn status(State(s): State<Shared>) -> Result<Json<serde_json::Value>, ApiError> {
     with_db(s, |s| {
-        let open_incidents: u64 =
+        let open_incidents: i64 =
             s.db.query_row(
                 "SELECT COUNT(*) FROM incidents WHERE ended_at IS NULL",
                 [],
