@@ -1,39 +1,24 @@
-# NetCheck implementation progress
+# NetCheck progress
 
-## Product direction
+## Product contract
 
-Local GUI for pinging one or multiple network endpoints concurrently and logging downtime. The supplied daemon-first `plan.md` is historical context; the GUI is now the default entry point.
+All monitoring addresses originate in the user interface and are saved in the local database. Fresh installations have no targets. There is no config-file, CLI-address, prefilled, seeded, or fallback-target monitoring path. Standard-library loopback constants are used only to bind the local application; automated tests resolve their own loopback hosts and take any failure-test target from the test operator.
 
-## Implemented
+## Codebase audit — 2026-11-12
 
-- Rust/Axum loopback-only server with embedded HTML, CSS, and JavaScript.
-- Bulk addition of named IPv4/IPv6 targets; duplicate and invalid input rejection; maximum 128 targets.
-- Independent Tokio monitor task per target using the existing surge-ping ICMP check.
-- Live target status, latency, lifetime packet loss, probe counts, and last 60 probe results.
-- Per-target interval and consecutive failure/recovery thresholds.
-- Pause/resume and removal; target history survives removal.
-- Threshold-based outage lifecycle and SQLite storage of all incidents.
-- Explicit interrupted incidents when monitoring stops without confirmed recovery.
-- Restart persistence without counting unobserved process downtime.
-- Local ICMP socket failures displayed separately from network outages.
-- Downtime log and complete CSV export with UTC timestamps and spreadsheet formula escaping.
-- Responsive layout, native keyboard-accessible dialogs, keyboard-operated tabs, disconnected state, empty states, and escaped user content.
-- Original console diagnostics available through `--daemon`.
-- Unit tests, real-ping API smoke test, and optional Playwright browser checks.
+Reviewed the Rust entry point, ICMP checks, state machine, storage and incident lifecycle, HTTP API, browser code, styles, test harnesses, dependencies, and documentation.
 
-## Scope boundaries
+Corrections:
 
-A target is one host IP representing a network. This version uses the host machine's routing table; it does not scan ranges, bind separate egress interfaces, or accept hostnames. Monitoring requires the process and computer to remain running. There are no Telegram/desktop alerts or installed background services. These are separate extensions from the original daemon roadmap.
+- Removed the obsolete config-driven daemon, its unsupported notification settings and hierarchical monitoring code. Renamed the shared gateway-specific ping helper to a generic typed probe module. Removed the unused TOML dependency.
+- Removed address literals from source, UI examples, docs and tests. Added a repository hygiene regression test for this contract. Saved user data is preserved.
+- Bind the web listener before touching monitoring state. Lock the database to one process, so a failed second launch cannot interrupt a live outage.
+- Validate persisted target settings before starting tasks. Malformed settings cause an explicit storage failure rather than a panic/restart loop.
+- Interrupt incidents at the last observed result after long monitoring gaps, backward clock jumps, shutdown and restart. Reset threshold sequences atomically and reject late results using generation numbers.
+- Supervise all probe tasks and abort child probes during shutdown. Handle Ctrl+C and Unix SIGTERM. Move SQLite operations off asynchronous runtime threads.
+- Use typed local probe errors and distinct ICMP identifiers. Local socket failures are not network outages. Reject invalid latency samples.
+- Replace toggle actions with idempotent explicit enabled-state updates. Keep controls disabled across polling while requests are pending; preserve failed-action errors; discard older refresh responses; capture deletion IDs before awaiting requests.
+- Render user-controlled values with DOM text nodes, not HTML strings. Freeze bulk-entry settings during submission and provide a whitespace-only input error.
+- Display delayed monitoring explicitly and prioritize ongoing incidents in the log. Validate unicast target input, normalize equivalent address forms, and guard CSV formula prefixes including leading whitespace.
 
-## Verification completed — 2026-11-12
-
-- Eight Rust unit tests passed.
-- `cargo clippy --all-targets -- -D warnings` passed without warnings.
-- `cargo build`, `cargo fmt --check`, and `git diff --check` passed.
-- Real-ping API smoke test passed, including IPv4, IPv6, concurrent healthy/unreachable targets, pause/resume, restart persistence, retained incidents, CSV, invalid/duplicate input, and Host/Origin protection.
-- Headless Google Chrome browser checks passed for bulk add, real status updates, latency bars, pause/resume, removal/cancellation, search, CSV download, HTML escaping, dialog focus, keyboard tabs, and 320/768/1024/1440px layouts, with zero console errors or warnings.
-- Desktop, narrow-screen, and add-dialog screenshots were visually inspected. This is Chrome verification; Firefox and Safari have not been tested.
-
-## Configuration hygiene correction — 2026-11-12
-
-Removed the tracked machine-specific daemon configuration. Only `config/monitor.example.toml` is shipped; it requires explicit gateway, external ping targets, and DNS hostname before daemon monitoring can start. Local TOML configurations are ignored, and missing configuration produces setup instructions. GUI targets remain user-supplied and initially empty. Regression tests cover refusal to run the unconfigured example, preservation of explicit targets, rejection of empty external targets, and missing-file guidance.
+Validation and any remaining limits are recorded after the audit run. CSV exports still materialize in memory and hold the storage mutex during reading; unusually large histories can delay writes. Database locks require a local filesystem. Monitoring cannot establish events between samples. Browser verification is scoped to Chrome.

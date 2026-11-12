@@ -6,17 +6,25 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const net = require("node:net");
+const dns = require("node:dns/promises");
 
 (async () => {
+  const loopback = (await dns.lookup("localhost", { family: 4 })).address;
+  const ipv6 = (await dns.lookup("localhost", { family: 6 })).address;
+  const unreachable = process.env.NETCHECK_TEST_UNREACHABLE;
+  if (!unreachable)
+    throw new Error(
+      "Set NETCHECK_TEST_UNREACHABLE to a host IP you know will not reply",
+    );
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "netcheck-browser-"));
   const port = await new Promise((resolve) => {
     const listener = net.createServer();
-    listener.listen(0, "127.0.0.1", () => {
+    listener.listen(0, loopback, () => {
       const port = listener.address().port;
       listener.close(() => resolve(port));
     });
   });
-  const base = `http://127.0.0.1:${port}`;
+  const base = `http://localhost:${port}`;
   const server = spawn(
     path.resolve("target/debug/netcheck"),
     ["--port", String(port), "--database", path.join(temp, "test.db")],
@@ -52,7 +60,7 @@ const net = require("node:net");
     await page
       .getByLabel("Targets", { exact: true })
       .fill(
-        "127.0.0.1, Local router\n::1, IPv6 gateway\n192.0.2.1, Remote network <img src=x onerror=alert(1)>",
+        `${loopback}, Local router\n${ipv6}, IPv6 gateway\n${unreachable}, Remote network <img src=x onerror=alert(1)>`,
       );
     await page.getByLabel("Interval (seconds)").fill("1");
     await page.getByLabel("Failures to confirm").fill("2");
@@ -75,9 +83,20 @@ const net = require("node:net");
       path: "/tmp/netcheck-desktop.png",
       fullPage: true,
     });
+    await page.route("**/api/targets/1/state", async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 1600));
+      await route.continue();
+    });
     await page
       .getByRole("button", { name: "Pause Local router", exact: true })
       .click();
+    await page.waitForTimeout(1100);
+    assert.equal(
+      await page
+        .getByRole("button", { name: "Pause Local router", exact: true })
+        .isDisabled(),
+      true,
+    );
     await page
       .getByRole("button", { name: "Resume Local router", exact: true })
       .waitFor();
@@ -153,16 +172,35 @@ const net = require("node:net");
       "true",
     );
     assert.deepEqual(errors, []);
+    await page.getByRole("tab", { name: /Live targets/ }).click();
+    await page.route("**/api/targets/1/state", (route) => route.abort());
+    await page
+      .getByRole("button", { name: "Pause Local router", exact: true })
+      .click();
+    await page.locator("#error").waitFor({ state: "visible" });
+    await page.waitForTimeout(1200);
+    assert.equal(await page.locator("#error").isVisible(), true);
+    await page.route("**/api/status", (route) => route.abort());
+    await page.locator("#connection-error").waitFor({ state: "visible" });
+    await page.unroute("**/api/status");
+    await page.locator("#connection-error").waitFor({ state: "hidden" });
+    // Aborted requests above are intentional; every error before them must be absent.
+    assert.deepEqual(
+      errors.filter((message) => !message.includes("net::ERR_FAILED")),
+      [],
+    );
     console.log(
-      "Browser checks passed: bulk add, real probes, latency bars, pause/resume, CSV, deletion/cancel, escaped names, search, keyboard navigation, four viewport sizes; zero console errors.",
+      "Browser checks passed: bulk add, real probes, latency bars, pause/resume, CSV, deletion/cancel, escaped names, search, keyboard navigation, four viewport sizes, delayed actions and disconnect recovery; no unexpected console errors.",
     );
     console.log(
       "Screenshots: /tmp/netcheck-desktop.png, /tmp/netcheck-mobile.png, /tmp/netcheck-add-dialog.png",
     );
   } finally {
     await browser?.close();
-    server.kill();
-    await new Promise((resolve) => server.once("exit", resolve));
+    if (server.exitCode == null) {
+      server.kill();
+      await new Promise((resolve) => server.once("exit", resolve));
+    }
     fs.rmSync(temp, { recursive: true, force: true });
   }
 })().catch((error) => {

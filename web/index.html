@@ -29,6 +29,7 @@
         </div>
         <button id="add-open" class="primary">＋ Add targets</button>
       </div>
+      <div id="connection-error" class="error" role="alert" hidden></div>
       <div id="error" class="error" role="alert" hidden></div>
       <section class="summary" aria-label="Monitoring summary">
         <div><span>Monitored targets</span><strong id="total">—</strong></div>
@@ -87,7 +88,7 @@
       >
         <div class="tools">
           <p class="muted">
-            Newest 1,000 incidents · all history retained in SQLite
+            Active incidents first · up to 1,000 recent records
           </p>
           <a class="button" href="/api/incidents.csv" download
             >↓ Export full CSV</a
@@ -148,7 +149,7 @@
           id="addresses"
           rows="5"
           required
-          placeholder="192.168.1.1, Office router&#10;1.1.1.1, Cloudflare&#10;::1, IPv6 loopback"
+          placeholder="Enter an IP address, optionally followed by a comma and a name"
         ></textarea>
         <div class="fields">
           <label

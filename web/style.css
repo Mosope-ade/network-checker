@@ -677,3 +677,7 @@ dialog input {
   padding: 0;
   margin: 0;
 }
+
+.badge.stale {
+  color: var(--amber);
+}
