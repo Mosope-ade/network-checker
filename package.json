@@ -1,0 +1,10 @@
+{
+  "name": "netcheck-browser-tests",
+  "private": true,
+  "scripts": {
+    "test:browser": "node tests/browser.cjs"
+  },
+  "devDependencies": {
+    "playwright": "1.65.0"
+  }
+}
