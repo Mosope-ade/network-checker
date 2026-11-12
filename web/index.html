@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <title>NetCheck · Network monitor</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="NetCheck home"
+        ><span class="mark" aria-hidden="true">⌁</span> NetCheck<span
+          class="version"
+          >LOCAL MONITOR</span
+        ></a
+      ><span id="connection" role="status">Connecting…</span>
+    </header>
+    <main>
+      <div class="page-heading">
+        <div>
+          <p class="eyebrow">NETWORK OPERATIONS / LIVE</p>
+          <h1>Network monitor</h1>
+          <p class="intro">
+            Monitor endpoints in parallel. Keep a clear record of downtime.
+          </p>
+        </div>
+        <button id="add-open" class="primary">＋ Add targets</button>
+      </div>
+      <div id="error" class="error" role="alert" hidden></div>
+      <section class="summary" aria-label="Monitoring summary">
+        <div><span>Monitored targets</span><strong id="total">—</strong></div>
+        <div><span>Responding</span><strong id="up">—</strong></div>
+        <div><span>Confirmed down</span><strong id="down">—</strong></div>
+        <div><span>Open incidents</span><strong id="open">—</strong></div>
+      </section>
+      <div class="section-heading">
+        <div class="tabs" role="tablist" aria-label="Monitor views">
+          <button
+            id="targets-tab"
+            role="tab"
+            aria-selected="true"
+            aria-controls="targets-panel"
+          >
+            Live targets <span id="target-count">0</span></button
+          ><button
+            id="incidents-tab"
+            role="tab"
+            aria-selected="false"
+            aria-controls="incidents-panel"
+            tabindex="-1"
+          >
+            Downtime log <span id="incident-count">0</span>
+          </button>
+        </div>
+        <span id="updated" class="muted">Waiting for first update</span>
+      </div>
+      <section id="targets-panel" role="tabpanel" aria-labelledby="targets-tab">
+        <div class="tools">
+          <label class="search"
+            >⌕
+            <input
+              id="search"
+              type="search"
+              placeholder="Find a name or IP address"
+              aria-label="Find a target" /></label
+          ><span class="muted">ICMP · independent checks · last 60 probes</span>
+        </div>
+        <div id="targets" class="targets"></div>
+        <div id="empty" class="empty" hidden>
+          <span class="empty-symbol" aria-hidden="true">⌁</span>
+          <h2>Your network, at a glance.</h2>
+          <p>
+            Add a router, server, or remote endpoint.<br />Each address runs on
+            its own monitoring schedule.
+          </p>
+          <button id="empty-add" class="primary">Add your first target</button>
+        </div>
+      </section>
+      <section
+        id="incidents-panel"
+        role="tabpanel"
+        aria-labelledby="incidents-tab"
+        hidden
+      >
+        <div class="tools">
+          <p class="muted">
+            Newest 1,000 incidents · all history retained in SQLite
+          </p>
+          <a class="button" href="/api/incidents.csv" download
+            >↓ Export full CSV</a
+          >
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Target</th>
+                <th>Started</th>
+                <th>Ended</th>
+                <th>Duration</th>
+                <th>Outcome</th>
+                <th>Reason</th>
+              </tr>
+            </thead>
+            <tbody id="incidents"></tbody>
+          </table>
+        </div>
+        <p id="no-incidents" class="empty" hidden>
+          No downtime recorded. Confirmed outages will appear here.
+        </p>
+        <p class="note">
+          Times use your browser’s timezone. Interrupted means monitoring
+          stopped before recovery was confirmed.
+        </p>
+      </section>
+      <footer>
+        <span
+          ><span class="tiny-dot"></span> Runs on this machine. Your data stays
+          here.</span
+        ><span>Keep NetCheck running to record downtime.</span>
+      </footer>
+    </main>
+    <dialog id="add-dialog" aria-labelledby="dialog-title">
+      <form id="add-form">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">EXPAND YOUR VIEW</p>
+            <h2 id="dialog-title">Add monitoring targets</h2>
+          </div>
+          <button
+            type="button"
+            id="add-close"
+            class="icon-button"
+            aria-label="Close dialog"
+          >
+            ×
+          </button>
+        </div>
+        <p class="muted">
+          One IPv4 or IPv6 address per line. Optionally add a name after a
+          comma.
+        </p>
+        <label for="addresses">Targets</label
+        ><textarea
+          id="addresses"
+          rows="5"
+          required
+          placeholder="192.168.1.1, Office router&#10;1.1.1.1, Cloudflare&#10;::1, IPv6 loopback"
+        ></textarea>
+        <div class="fields">
+          <label
+            >Interval (seconds)<input
+              id="interval"
+              type="number"
+              min="1"
+              max="3600"
+              value="5"
+              required /></label
+          ><label
+            >Failures to confirm<input
+              id="failures"
+              type="number"
+              min="1"
+              max="20"
+              value="3"
+              required /></label
+          ><label
+            >Successes to recover<input
+              id="recoveries"
+              type="number"
+              min="1"
+              max="20"
+              value="3"
+              required
+          /></label>
+        </div>
+        <p class="note">
+          Use a representative host IP for each network. CIDR subnet scans and
+          hostnames are not supported. Requests time out after 2 seconds.
+        </p>
+        <p id="form-error" class="error" role="alert" hidden></p>
+        <div class="dialog-footer">
+          <button type="button" id="add-cancel">Cancel</button
+          ><button type="submit" id="add-submit" class="primary">
+            Start monitoring
+          </button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="remove-dialog" aria-labelledby="remove-title">
+      <form method="dialog">
+        <h2 id="remove-title">Remove this target?</h2>
+        <p id="remove-text"></p>
+        <p class="muted">
+          Monitoring will stop. Its downtime history will remain in the log.
+        </p>
+        <div class="dialog-footer">
+          <button value="cancel">Cancel</button
+          ><button id="remove-confirm" value="confirm" class="danger">
+            Remove target
+          </button>
+        </div>
+      </form>
+    </dialog>
+  </body>
+</html>

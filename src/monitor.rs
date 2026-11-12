@@ -1,11 +1,11 @@
+use chrono::Local;
 use std::sync::Arc;
 use tokio::time;
 use tracing::{debug, info, warn};
-use chrono::Local;
 
-use crate::config::Config;
-use crate::checks::gateway;
 use crate::checks::dns;
+use crate::checks::gateway;
+use crate::config::Config;
 use crate::diagnostics;
 
 #[derive(Default)]
@@ -86,10 +86,11 @@ pub async fn run(config: Arc<Config>) {
                 } else {
                     info!(cycle, time = %now, latency_ms = ?duration.as_millis(), "✓ Gateway reachable");
                 }
-                
+
                 // Phase 4: Internet connectivity
-                let internet = crate::checks::internet::check_internet(&config.internet.targets).await;
-                
+                let internet =
+                    crate::checks::internet::check_internet(&config.internet.targets).await;
+
                 if internet.reachable {
                     if internet_state.record_success(config.monitor.recovery_threshold) {
                         info!(cycle, time = %now, "🟢 Internet connectivity recovered after stable checks");
@@ -190,7 +191,7 @@ pub async fn run(config: Arc<Config>) {
                         local_ip = ?report.state.local_ip,
                         route = report.state.route_exists,
                         arp = report.state.arp_resolved,
-                        diagnosis = ?report.diagnosis,
+                        diagnosis = %report.diagnosis,
                         "Local diagnostic report"
                     );
                 } else if !gateway_state.down {

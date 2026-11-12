@@ -1,4 +1,7 @@
 plan.md
 /target
 
-/data
+
+/data/
+
+/node_modules/

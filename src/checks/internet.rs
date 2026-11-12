@@ -25,9 +25,7 @@ pub async fn check_internet(targets: &[IpAddr]) -> InternetStatus {
     let mut join_set = JoinSet::new();
 
     for &target in targets {
-        join_set.spawn(async move {
-            (target, ping_gateway(target).await)
-        });
+        join_set.spawn(async move { (target, ping_gateway(target).await) });
     }
 
     let mut targets_reachable = 0;

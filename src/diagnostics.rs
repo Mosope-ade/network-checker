@@ -104,3 +104,13 @@ pub fn diagnose_gateway(gateway: IpAddr) -> DiagnosticReport {
 
     DiagnosticReport { state, diagnosis }
 }
+
+impl std::fmt::Display for Diagnosis {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InterfaceDown => f.write_str("Network interface is down"),
+            Self::NoRoute => f.write_str("No route to gateway"),
+            Self::GatewayNotResponding(reason) => write!(f, "Gateway not responding: {reason}"),
+        }
+    }
+}
