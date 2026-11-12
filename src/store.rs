@@ -1,3 +1,4 @@
+use crate::activity::{self, Event};
 use crate::ping::ProbeError;
 use crate::tracker::{Tracker, Transition};
 use rusqlite::{params, Connection};
@@ -105,7 +106,13 @@ impl Store {
           CREATE TABLE IF NOT EXISTS incidents(id INTEGER PRIMARY KEY, target_id INTEGER NOT NULL,
             target_name TEXT NOT NULL, address TEXT NOT NULL, started_at INTEGER NOT NULL,
             ended_at INTEGER, outcome TEXT NOT NULL, reason TEXT NOT NULL);
-          CREATE INDEX IF NOT EXISTS incident_target ON incidents(target_id, ended_at);")?;
+          CREATE INDEX IF NOT EXISTS incident_target ON incidents(target_id, ended_at);
+          CREATE TABLE IF NOT EXISTS activity(id INTEGER PRIMARY KEY AUTOINCREMENT,timestamp INTEGER NOT NULL,target_id INTEGER NOT NULL,target_name TEXT NOT NULL,address TEXT NOT NULL,kind TEXT NOT NULL,message TEXT NOT NULL,outage_started_at INTEGER,duration_ms INTEGER,source TEXT UNIQUE);
+          CREATE INDEX IF NOT EXISTS activity_time ON activity(timestamp DESC,id DESC);
+          INSERT OR IGNORE INTO activity(timestamp,target_id,target_name,address,kind,message,outage_started_at,source)
+          SELECT started_at,target_id,target_name,address,'outage_recorded','Outage retained from earlier downtime history: '||reason,started_at,'incident:'||id||':down' FROM incidents;
+          INSERT OR IGNORE INTO activity(timestamp,target_id,target_name,address,kind,message,outage_started_at,duration_ms,source)
+          SELECT ended_at,target_id,target_name,address,CASE WHEN outcome='recovered' THEN 'recovery_recorded' ELSE 'interruption_recorded' END,CASE WHEN outcome='recovered' THEN 'Recovery retained from existing downtime history.' ELSE 'Monitoring stopped before recovery was confirmed.' END,started_at,MAX(0,ended_at-started_at),'incident:'||id||':end' FROM incidents WHERE ended_at IS NOT NULL;")?;
         Ok(Self { db, _owner: owner })
     }
     pub fn targets(&self) -> rusqlite::Result<Vec<Target>> {
@@ -159,6 +166,25 @@ impl Store {
             "UPDATE targets SET data=? WHERE id=?",
             params![encode_target(&t)?, t.id],
         )?;
+        activity::write(
+            &tx,
+            Event::new(
+                &t,
+                now(),
+                "added",
+                format!(
+                    "Monitoring started. Checking every {} {}. Downtime is confirmed after {} {}.",
+                    t.interval,
+                    if t.interval == 1 { "second" } else { "seconds" },
+                    t.failure_threshold,
+                    if t.failure_threshold == 1 {
+                        "failed check"
+                    } else {
+                        "consecutive failed checks"
+                    }
+                ),
+            ),
+        )?;
         tx.commit()?;
         Ok(t)
     }
@@ -180,11 +206,48 @@ impl Store {
         result
     }
     pub fn reset_after_restart(&mut self) -> rusqlite::Result<()> {
+        self.reset_session(true)
+    }
+    pub fn stop(&mut self) -> rusqlite::Result<()> {
+        self.reset_session(false)
+    }
+    fn reset_session(&mut self, starting: bool) -> rusqlite::Result<()> {
         let targets = self.targets()?;
         let tx = self.db.transaction()?;
+        for target in &targets {
+            activity::interrupt(
+                &tx,
+                target,
+                target.last_check.unwrap_or_else(now),
+                if starting {
+                    "The previous monitoring session ended before recovery was confirmed. Unobserved time is excluded."
+                } else {
+                    "The monitoring service stopped before recovery was confirmed. Unobserved time is excluded."
+                },
+            )?;
+        }
         // Also close any orphaned open incident left by an interrupted older version.
         tx.execute("UPDATE incidents SET ended_at=MAX(started_at,COALESCE((SELECT json_extract(data,'$.last_check') FROM targets WHERE targets.id=incidents.target_id),started_at)),outcome='interrupted' WHERE ended_at IS NULL", [])?;
         for mut t in targets {
+            if t.enabled && t.last_check.is_some() {
+                activity::write(
+                    &tx,
+                    Event::new(
+                        &t,
+                        now(),
+                        if starting {
+                            "session_started"
+                        } else {
+                            "session_stopped"
+                        },
+                        if starting {
+                            "Monitoring service started. Saved targets resumed with fresh confirmation checks."
+                        } else {
+                            "Monitoring service stopped. No further checks run until the service starts again."
+                        },
+                    ),
+                )?;
+            }
             t.generation = t.generation.saturating_add(1);
             t.tracker = Tracker::default();
             t.status = if t.enabled { "pending" } else { "paused" }.into();
@@ -203,7 +266,25 @@ impl Store {
             return Ok(());
         }
         let tx = self.db.transaction()?;
-        tx.execute("UPDATE incidents SET ended_at=MAX(started_at,?),outcome='interrupted' WHERE target_id=? AND ended_at IS NULL",params![t.last_check.unwrap_or_else(now),id])?;
+        activity::interrupt(
+            &tx,
+            &t,
+            t.last_check.unwrap_or_else(now),
+            "Monitoring was paused before recovery was confirmed.",
+        )?;
+        activity::write(
+            &tx,
+            Event::new(
+                &t,
+                now(),
+                if enabled { "resumed" } else { "paused" },
+                if enabled {
+                    "Monitoring resumed. Waiting for a fresh ping result."
+                } else {
+                    "Monitoring paused by the user. No more probes will be sent."
+                },
+            ),
+        )?;
         t.enabled = enabled;
         t.generation = t.generation.saturating_add(1);
         t.tracker = Tracker::default();
@@ -231,14 +312,31 @@ impl Store {
             tracing::debug!(target=id,details=%error,"ICMP probe failed");
         }
         let tx = self.db.transaction()?;
-        if t.last_check.is_some_and(|previous| {
-            at < previous || at.saturating_sub(previous) > (t.interval as i64 + 7) * 1000
-        }) {
-            tx.execute("UPDATE incidents SET ended_at=MAX(started_at,?),outcome='interrupted' WHERE target_id=? AND ended_at IS NULL", params![t.last_check,t.id])?;
+        if t.status != "pending"
+            && t.last_check.is_some_and(|previous| {
+                at < previous || at.saturating_sub(previous) > (t.interval as i64 + 7) * 1000
+            })
+        {
+            activity::interrupt(&tx,&t,t.last_check.unwrap_or(at),"A monitoring gap or clock change interrupted this outage. Unobserved time is excluded.")?;
+            let previous = t.last_check.unwrap_or(at);
+            let (kind, message) = if at < previous {
+                ("clock_changed","The system clock moved backward. The previous outage was interrupted and confirmation checks restarted.".to_owned())
+            } else {
+                ("gap",format!("No probe result was recorded for {} seconds. Monitoring has resumed with fresh confirmation checks.",at.saturating_sub(previous)/1000))
+            };
+            activity::write(&tx, Event::new(&t, at, kind, message))?;
             t.tracker = Tracker::default();
         }
         if matches!(&result, Err(ProbeError::Unavailable(_))) {
-            tx.execute("UPDATE incidents SET ended_at=MAX(started_at,?),outcome='interrupted' WHERE target_id=? AND ended_at IS NULL", params![t.last_check.unwrap_or(at),t.id])?;
+            activity::interrupt(
+                &tx,
+                &t,
+                t.last_check.unwrap_or(at),
+                "Local ping permissions or socket failure interrupted monitoring.",
+            )?;
+            if t.status != "error" {
+                activity::write(&tx,Event::new(&t,at,"probe_error","Local ping probes could not run. Check this machine's ICMP permissions; this is not confirmed network downtime."))?;
+            }
             t.status = "error".into();
             t.error = result.err().map(|error| error.user_message().to_owned());
             t.latency_ms = None;
@@ -257,6 +355,7 @@ impl Store {
                 "Invalid probe latency".into(),
             ));
         }
+        let previous_status = t.status.clone();
         t.sent = t.sent.saturating_add(1);
         t.last_check = Some(at);
         t.latency_ms = result.as_ref().ok().copied();
@@ -289,12 +388,61 @@ impl Store {
             "up"
         }
         .into();
+        if previous_status == "pending" && result.is_ok() {
+            activity::write(
+                &tx,
+                Event::new(
+                    &t,
+                    at,
+                    "responding",
+                    format!(
+                        "First reply received in {:.2} ms.",
+                        t.latency_ms.unwrap_or_default()
+                    ),
+                ),
+            )?;
+        } else if previous_status == "error" && result.is_ok() {
+            activity::write(
+                &tx,
+                Event::new(
+                    &t,
+                    at,
+                    "responding",
+                    "Local probes are working again and the target is responding.",
+                ),
+            )?;
+        } else if previous_status == "suspect" && result.is_ok() && !t.tracker.down {
+            activity::write(&tx,Event::new(&t,at,"transient_recovery","Replies resumed before the downtime threshold was reached. No outage was confirmed."))?;
+        }
+        if t.status == "suspect" && t.tracker.failures == 1 {
+            activity::write(&tx,Event::new(&t,at,"ping_failed",format!("Ping did not receive a reply. Waiting for {} consecutive failed checks before confirming downtime.",t.failure_threshold)))?;
+        }
+        if t.status == "recovering" && t.tracker.successes == 1 {
+            activity::write(&tx,Event::new(&t,at,"recovering",format!("Reply received. Waiting for {} consecutive successful checks to confirm recovery.",t.recovery_threshold)))?;
+        }
         match transition {
             Some(Transition::Down(start)) => {
                 tx.execute("INSERT INTO incidents(target_id,target_name,address,started_at,outcome,reason) VALUES(?,?,?,?,'ongoing',?)",
                     params![t.id,t.name,t.address,start,t.error.as_deref().unwrap_or("No ICMP reply")])?;
+                let incident = tx.last_insert_rowid();
+                activity::write(
+                    &tx,
+                    Event::new(
+                        &t,
+                        at,
+                        "outage_confirmed",
+                        format!(
+                            "{} consecutive checks failed. Downtime is now confirmed.",
+                            t.failure_threshold
+                        ),
+                    )
+                    .outage(start, None)
+                    .source(format!("incident:{incident}:down")),
+                )?;
             }
             Some(Transition::Recovered(end)) => {
+                let (incident,start):(i64,i64)=tx.query_row("SELECT id,started_at FROM incidents WHERE target_id=? AND ended_at IS NULL ORDER BY id DESC LIMIT 1",[t.id],|row|Ok((row.get(0)?,row.get(1)?)))?;
+                activity::write(&tx,Event::new(&t,at,"recovered",format!("Recovery confirmed after {} {}. Downtime ends at the first reply in this stable sequence.",t.recovery_threshold,if t.recovery_threshold==1 {"successful reply"} else {"consecutive successful replies"})).outage(start,Some(end.saturating_sub(start))).source(format!("incident:{incident}:end")))?;
                 tx.execute("UPDATE incidents SET ended_at=?,outcome='recovered' WHERE target_id=? AND ended_at IS NULL", params![end,t.id])?;
             }
             None => {}
@@ -430,6 +578,64 @@ mod tests {
         let t = s.add(input()).unwrap();
         assert!(s.record(t.id, 0, Ok(f64::NAN), 1000).is_err());
         assert_eq!(s.target(t.id).unwrap().sent, 0);
+    }
+    #[test]
+    fn activity_distinguishes_failure_confirmation_and_stable_recovery_times() {
+        let mut s = Store::open(":memory:").unwrap();
+        let t = s.add(input()).unwrap();
+        s.record(t.id, 0, Err(ProbeError::TimedOut), 1000).unwrap();
+        s.record(t.id, 0, Err(ProbeError::TimedOut), 2000).unwrap();
+        s.record(t.id, 0, Ok(1.), 3000).unwrap();
+        s.record(t.id, 0, Ok(1.), 4000).unwrap();
+        let events = activity::list(&s.db).unwrap();
+        let failure = events
+            .iter()
+            .find(|event| event.kind == "outage_confirmed")
+            .unwrap();
+        assert_eq!(failure.timestamp, 2000);
+        assert_eq!(failure.outage_started_at, Some(1000));
+        let recovery = events
+            .iter()
+            .find(|event| event.kind == "recovered")
+            .unwrap();
+        assert_eq!(recovery.timestamp, 4000);
+        assert_eq!(recovery.duration_ms, Some(2000));
+        assert!(events
+            .iter()
+            .any(|event| event.kind == "ping_failed" && event.timestamp == 1000));
+        assert!(events
+            .iter()
+            .any(|event| event.kind == "recovering" && event.timestamp == 3000));
+        s.stop().unwrap();
+        assert!(activity::list(&s.db)
+            .unwrap()
+            .iter()
+            .any(|event| event.kind == "session_stopped"));
+    }
+    #[test]
+    fn existing_downtime_is_migrated_to_activity_once_without_inventing_confirmation_times() {
+        let path = std::env::temp_dir().join(format!(
+            "netcheck-activity-{}-{}.db",
+            std::process::id(),
+            now()
+        ));
+        {
+            let s = Store::open(path.to_str().unwrap()).unwrap();
+            s.db.execute_batch("DROP TABLE activity;").unwrap();
+            s.db.execute("INSERT INTO incidents(target_id,target_name,address,started_at,ended_at,outcome,reason) VALUES(1,'Historical router',?,1000,2000,'recovered','No reply')",[std::net::Ipv4Addr::LOCALHOST.to_string()]).unwrap();
+        }
+        for _ in 0..2 {
+            let s = Store::open(path.to_str().unwrap()).unwrap();
+            let events = activity::list(&s.db).unwrap();
+            assert_eq!(events.len(), 2);
+            assert!(events
+                .iter()
+                .any(|event| event.kind == "outage_recorded" && event.timestamp == 1000));
+            assert!(events
+                .iter()
+                .any(|event| event.kind == "recovery_recorded" && event.timestamp == 2000));
+        }
+        std::fs::remove_file(path).unwrap();
     }
     #[test]
     fn validates_input() {

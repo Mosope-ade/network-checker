@@ -14,6 +14,14 @@ Open the local URL printed in the terminal (normally **http://localhost:8787**),
 
 Use a representative unicast host IP for each network. The tool uses the running machine's routing table; it does not scan subnets, bind separate egress interfaces, or accept hostnames. An absent ICMP reply does not establish that every service on that network is down.
 
+## What happened, and when
+
+The **Activity** tab is a chronological, searchable log. Each entry shows the full date and time (24-hour clock, to the second), target name/address, and a plain-language explanation. The displayed timezone is printed above the log. The latest three events also appear below the live targets.
+
+It records monitoring starts, first replies, failed pings, confirmed downtime, returning replies, confirmed recovery, pauses, resumes, removed targets, local ping errors, monitoring gaps, clock changes, service stops and restarts. Outage entries distinguish the **first failed probe** from the later **confirmation time**. Recovery entries show when stable replies began and the observed downtime duration. Historical incidents are retained as clearly labelled historical records; unavailable confirmation timestamps are never invented.
+
+Search by target, event or displayed time. **Export activity** downloads the entire event history with UTC timestamps. The separate **Downtime** view summarizes each outage: down since, recovered/stopped time, duration, outcome and reason. Both histories survive restarts and target removal. The activity list stays stable between new events so polling does not erase text selections while you read or copy it.
+
 ## Data and operation
 
 Targets entered through the UI, lifetime packet counters, the latest 60 probe results per target, and all downtime incidents are stored in `data/netcheck.db`. Restarting resumes the user's saved enabled targets; paused targets stay paused. Removing a target retains its incidents. The log prioritizes ongoing incidents, then shows recent history, up to 1,000 records. **Export full CSV** includes all incidents. Browser dates use the browser's timezone; CSV dates use UTC.
@@ -46,7 +54,7 @@ Only the web port and local database path are CLI options. The retired `--daemon
 
 The server binds to the operating system's IPv4 loopback constant. This is the local application listener, never a ping target. Expected Host and same-origin checks restrict access to the local browser application; it has no remote/multi-user mode. Database ownership is exclusive, including through file aliases, so a second NetCheck process cannot change an active monitor's state. Back up SQLite with its backup API or while NetCheck is stopped.
 
-SQLite work runs on blocking workers rather than the asynchronous probe runtime. CSV exports currently materialize in memory and hold the storage mutex while reading; very large logs can temporarily delay writes. Export during quiet periods for unusually large histories. Network filesystems are not supported for the database owner lock.
+SQLite work runs on blocking workers rather than the asynchronous probe runtime. CSV exports stream bounded chunks from a separate read-only connection; downloading history does not hold the monitor’s database mutex or materialize the complete log in memory. A file-backed database on a local filesystem is required for persistent history and reliable ownership locks.
 
 ## Error handling
 

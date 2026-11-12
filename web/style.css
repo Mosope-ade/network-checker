@@ -695,3 +695,102 @@ dialog input {
     flex-direction: column;
   }
 }
+
+#recent-activity {
+  margin-top: 32px;
+}
+.tools h2 {
+  font-size: 18px;
+  font-weight: 550;
+  margin: 0;
+  letter-spacing: -0.3px;
+}
+.event-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.event {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  gap: 24px;
+  padding: 20px 24px;
+  border-top: 1px solid var(--line);
+}
+.event:first-child {
+  border-top: 0;
+}
+.event time {
+  font:
+    12px/1.8 ui-monospace,
+    monospace;
+  color: var(--text);
+}
+.event h3 {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0 0 8px;
+  overflow-wrap: anywhere;
+}
+.event p {
+  font-size: 13px;
+  line-height: 1.7;
+  margin: 4px 0;
+  color: var(--text);
+}
+.event small {
+  display: block;
+  margin-top: 8px;
+  overflow-wrap: anywhere;
+}
+.event .event-detail {
+  color: var(--muted);
+  font-size: 12px;
+}
+@media (max-width: 760px) {
+  .event {
+    grid-template-columns: 1fr;
+    gap: 8px;
+    padding: 16px;
+  }
+  .event time {
+    font-size: 11px;
+  }
+  #activity-panel .tools {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .address {
+    overflow-wrap: anywhere;
+  }
+}
+@media (max-width: 420px) {
+  .tabs {
+    gap: 12px;
+  }
+  .tabs button {
+    font-size: 12px;
+  }
+  .tabs span {
+    padding: 2px 4px;
+    margin-left: 4px;
+  }
+  .target-header {
+    flex-wrap: wrap;
+  }
+}
+
+.activity-search-label {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  margin: 16px 0;
+}
+.activity-search-label input {
+  display: block;
+  margin-top: 8px;
+  max-width: 420px;
+}

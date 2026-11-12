@@ -1,7 +1,7 @@
 use crate::store::{NewTarget, Store};
 use axum::{
     extract::{Path, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{header, StatusCode},
     middleware::{self, Next},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
@@ -49,6 +49,9 @@ pub async fn run(port: u16, database: &str) -> Result<(), Box<dyn std::error::Er
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await?;
     let local = listener.local_addr()?;
     let mut store = Store::open(database)?;
+    if store.db.path().is_none_or(|path| path.is_empty()) {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,"Choose a database file with --database so downtime logs survive restarts; memory-only databases are not supported.").into());
+    }
     store.reset_after_restart()?;
     let state = Arc::new(Mutex::new(store));
     let app = Router::new()
@@ -80,6 +83,7 @@ pub async fn run(port: u16, database: &str) -> Result<(), Box<dyn std::error::Er
         .route("/api/targets/{id}/state", axum::routing::put(set_enabled))
         .route("/api/targets/{id}", axum::routing::delete(remove))
         .route("/api/incidents.csv", get(export))
+        .route("/api/activity.csv",get(export_activity))
         .with_state(state.clone())
         .layer(axum::extract::DefaultBodyLimit::max(16 * 1024))
         .layer(middleware::from_fn(move |request, next| {
@@ -92,7 +96,7 @@ pub async fn run(port: u16, database: &str) -> Result<(), Box<dyn std::error::Er
         .await;
     scheduler.abort();
     let _ = scheduler.await;
-    with_db(state, |s| s.reset_after_restart().map_err(db_error))
+    with_db(state, |s| s.stop().map_err(db_error))
         .await
         .map_err(|(_, message)| std::io::Error::other(message))?;
     result?;
@@ -232,6 +236,7 @@ async fn status(State(s): State<Shared>) -> Result<Json<serde_json::Value>, ApiE
         Ok(Json(serde_json::json!({
             "targets": s.targets().map_err(db_error)?,
             "incidents": s.incidents().map_err(db_error)?,
+        "activity": crate::activity::list(&s.db).map_err(db_error)?,
             "open_incidents": open_incidents,
             "server_time": crate::store::now()
         })))
@@ -280,78 +285,34 @@ async fn remove(State(s): State<Shared>, Path(id): Path<i64>) -> Result<StatusCo
     with_db(s,move |s| {
         let t=s.target(id).map_err(target_error)?;
         let tx=s.db.transaction().map_err(db_error)?;
-        tx.execute("UPDATE incidents SET ended_at=MAX(started_at,?),outcome='interrupted' WHERE target_id=? AND ended_at IS NULL",rusqlite::params![t.last_check.unwrap_or_else(crate::store::now),id]).map_err(db_error)?;
+        crate::activity::interrupt(&tx,&t,t.last_check.unwrap_or_else(crate::store::now),"The target was removed before recovery was confirmed.").map_err(db_error)?;
+        crate::activity::write(&tx,crate::activity::Event::new(&t,crate::store::now(),"removed","The target was removed by the user. Its activity and downtime history are retained.")).map_err(db_error)?;
         tx.execute("DELETE FROM targets WHERE id=?",[id]).map_err(db_error)?;
         tx.commit().map_err(db_error)?;Ok(StatusCode::NO_CONTENT)
     }).await
 }
-fn csv_cell(value: &str) -> String {
-    // Spreadsheet formulas must remain literal when opening an exported log.
-    let prefix = if value.trim_start().starts_with(['=', '+', '-', '@'])
-        || value.starts_with(['\t', '\r', '\n'])
-    {
-        "'"
-    } else {
-        ""
-    };
-    format!("\"{prefix}{}\"", value.replace('"', "\"\""))
+async fn export(State(s): State<Shared>) -> Result<Response, ApiError> {
+    export_report(s, crate::csv::Report::Downtime).await
 }
-async fn export(State(s): State<Shared>) -> Result<(HeaderMap, String), ApiError> {
-    // Export the complete log; the GUI intentionally displays only the newest 1000.
-    with_db(s, |s| {
-    let mut stmt=s.db.prepare("SELECT target_name,address,started_at,ended_at,outcome,reason FROM incidents ORDER BY id DESC").map_err(db_error)?;
-    let rows = stmt
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, i64>(2)?,
-                r.get::<_, Option<i64>>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, String>(5)?,
-            ))
-        })
-        .map_err(db_error)?;
-    let mut csv =
-        "target,address,started_at_utc,ended_at_utc,duration_seconds,outcome,reason\r\n".to_owned();
-    for row in rows {
-        let (name, address, start, end, outcome, reason) = row.map_err(db_error)?;
-        let date = |ms| {
-            chrono::DateTime::from_timestamp_millis(ms).map(|date|date.to_rfc3339()).unwrap_or_else(||format!("Invalid timestamp: {ms}"))
-        };
-        let duration = end
-            .map(|e| format!("{:.3}", e.saturating_sub(start).max(0) as f64 / 1000.))
-            .unwrap_or_default();
-        csv.push_str(
-            &[
-                name,
-                address,
-                date(start),
-                end.map(date).unwrap_or_default(),
-                duration,
-                outcome,
-                reason,
-            ]
-            .iter()
-            .map(|v| csv_cell(v))
-            .collect::<Vec<_>>()
-            .join(","),
-        );
-        csv.push_str("\r\n");
-    }
-    let mut h = HeaderMap::new();
-    h.insert(
-        header::CONTENT_TYPE,
-        "text/csv; charset=utf-8".parse().unwrap(),
-    );
-    h.insert(
-        header::CONTENT_DISPOSITION,
-        "attachment; filename=netcheck-downtime.csv"
-            .parse()
-            .unwrap(),
-    );
-    Ok((h, csv))
-    }).await
+async fn export_activity(State(s): State<Shared>) -> Result<Response, ApiError> {
+    export_report(s, crate::csv::Report::Activity).await
+}
+async fn export_report(s: Shared, report: crate::csv::Report) -> Result<Response, ApiError> {
+    let path = with_db(s, |store| {
+        store
+            .db
+            .path()
+            .filter(|path| !path.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "The export database is unavailable.".into(),
+                )
+            })
+    })
+    .await?;
+    crate::csv::download(path, report).await.map_err(db_error)
 }
 
 async fn schedule(s: Shared) {
@@ -436,11 +397,5 @@ mod tests {
             None,
         );
         assert_eq!(db_error(busy).0, StatusCode::LOCKED);
-    }
-    #[test]
-    fn exports_formula_like_names_as_literals() {
-        assert_eq!(csv_cell("=1+1"), "\"'=1+1\"");
-        assert_eq!(csv_cell("  =1+1"), "\"'  =1+1\"");
-        assert_eq!(csv_cell("a\"b"), "\"a\"\"b\"");
     }
 }

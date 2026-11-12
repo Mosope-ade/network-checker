@@ -47,6 +47,7 @@ const dns = require("node:dns/promises");
     });
     const page = await browser.newPage({
       viewport: { width: 1440, height: 1100 },
+      timezoneId: process.env.NETCHECK_TEST_TIMEZONE || "UTC",
     });
     const errors = [];
     const expectedFailedUrls = new Set();
@@ -115,6 +116,52 @@ const dns = require("node:dns/promises");
     await page
       .getByRole("button", { name: "Pause Local router", exact: true })
       .waitFor();
+    await page.getByRole("tab", { name: /Activity log/ }).click();
+    await page.locator("#activity-events .event").first().waitFor();
+    assert.match(
+      await page.locator("#activity-events").textContent(),
+      /Downtime confirmed/,
+    );
+    assert.match(
+      await page.locator("#activity-events").textContent(),
+      /Downtime began/,
+    );
+    assert.match(
+      await page.locator("#activity-panel .time-zone").textContent(),
+      /24-hour clock/,
+    );
+    await page
+      .getByRole("searchbox", { name: "Find an event" })
+      .fill("no-such-event");
+    await page.getByText("No events match your search.").waitFor();
+    await page.getByRole("searchbox", { name: "Find an event" }).fill("");
+    const eventTime = await page
+      .locator("#activity-events time")
+      .first()
+      .getAttribute("datetime");
+    assert.ok(Number.isFinite(Date.parse(eventTime)));
+    await page.screenshot({
+      path: "/tmp/netcheck-activity-desktop.png",
+      fullPage: true,
+    });
+    await page.setViewportSize({ width: 320, height: 1000 });
+    assert.ok(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    );
+    await page.screenshot({
+      path: "/tmp/netcheck-activity-mobile.png",
+      fullPage: true,
+    });
+    await page.setViewportSize({ width: 1440, height: 1100 });
+    const activityDownloaded = page.waitForEvent("download");
+    await page.getByRole("link", { name: "Export activity" }).click();
+    const activityDownload = await activityDownloaded;
+    assert.match(
+      fs.readFileSync(await activityDownload.path(), "utf8"),
+      /outage_confirmed/,
+    );
     await page.getByRole("tab", { name: /Downtime log/ }).click();
     await page.locator("#incidents tr").first().waitFor();
     const downloaded = page.waitForEvent("download");
@@ -177,7 +224,7 @@ const dns = require("node:dns/promises");
     await page.getByRole("tab", { name: /Live targets/ }).focus();
     await page.keyboard.press("ArrowRight");
     assert.equal(
-      await page.locator("#incidents-tab").getAttribute("aria-selected"),
+      await page.locator("#activity-tab").getAttribute("aria-selected"),
       "true",
     );
     assert.deepEqual(errors, []);

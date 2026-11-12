@@ -13,7 +13,7 @@ function element(tag, attributes = {}, ...children) {
 }
 const pendingActions = new Set();
 let refreshSequence = 0;
-let data = { targets: [], incidents: [] };
+let data = { targets: [], incidents: [], activity: [] };
 let serverOffset = 0;
 let loaded = false;
 let removeId = null;
@@ -36,16 +36,111 @@ function duration(ms) {
     return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
   return `${Math.floor(seconds / 86400)}d ${Math.floor((seconds % 86400) / 3600)}h`;
 }
-const date = (ms) =>
-  ms == null
-    ? "—"
-    : new Date(ms).toLocaleString([], {
-        month: "short",
-        day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-      });
+const dateFormatter = new Intl.DateTimeFormat(undefined, {
+  year: "numeric",
+  month: "short",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false,
+});
+const date = (ms) => (ms == null ? "—" : dateFormatter.format(new Date(ms)));
+const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+for (const node of document.querySelectorAll(".time-zone"))
+  node.textContent = `All times shown in ${timeZone} · 24-hour clock · seconds included`;
+const eventLabels = {
+  added: "Monitoring started",
+  responding: "Reply received",
+  ping_failed: "Ping failed",
+  outage_confirmed: "Downtime confirmed",
+  outage_recorded: "Historical outage",
+  recovery_recorded: "Historical recovery",
+  interruption_recorded: "Historical interruption",
+  clock_changed: "System clock changed",
+  recovering: "Replies returning",
+  recovered: "Recovery confirmed",
+  transient_recovery: "Replies restored",
+  paused: "Monitoring paused",
+  resumed: "Monitoring resumed",
+  removed: "Target removed",
+  interrupted: "Monitoring interrupted",
+  probe_error: "Local ping error",
+  gap: "Monitoring gap",
+  session_started: "Service started",
+  session_stopped: "Service stopped",
+};
+function eventNode(event) {
+  const tone = ["outage_confirmed", "outage_recorded", "probe_error"].includes(
+    event.kind,
+  )
+    ? "down"
+    : ["recovered", "responding", "transient_recovery", "resumed"].includes(
+          event.kind,
+        )
+      ? "up"
+      : "pending";
+  const detail = [];
+  if (event.outage_started_at != null)
+    detail.push(`Downtime began ${date(event.outage_started_at)}.`);
+  if (event.duration_ms != null) {
+    if (
+      ["recovered", "recovery_recorded"].includes(event.kind) &&
+      event.outage_started_at != null
+    )
+      detail.push(
+        `Replies restored at ${date(event.outage_started_at + event.duration_ms)}.`,
+      );
+    detail.push(`Observed downtime: ${duration(event.duration_ms)}.`);
+  }
+  return element(
+    "li",
+    { className: `event ${tone}` },
+    element(
+      "time",
+      {
+        datetime: new Date(event.timestamp).toISOString(),
+        title: new Date(event.timestamp).toISOString(),
+      },
+      date(event.timestamp),
+    ),
+    element(
+      "div",
+      {},
+      element(
+        "h3",
+        {},
+        `${event.target_name} — ${eventLabels[event.kind] || "Monitoring update"}`,
+      ),
+      element("p", {}, event.message),
+      detail.length
+        ? element("p", { className: "event-detail" }, detail.join(" "))
+        : null,
+      element("small", { className: "address" }, event.address),
+    ),
+  );
+}
+let activitySignature = "";
+function renderActivity() {
+  const activity = data.activity || [];
+  const query = $("activity-search").value.toLowerCase().trim();
+  const signature = JSON.stringify([activity, query]);
+  if (signature === activitySignature) return;
+  activitySignature = signature;
+  const filtered = activity.filter((event) =>
+    `${event.target_name} ${event.address} ${eventLabels[event.kind] || event.kind} ${event.message} ${date(event.timestamp)}`
+      .toLowerCase()
+      .includes(query),
+  );
+  $("activity-events").replaceChildren(...filtered.map(eventNode));
+  $("recent-events").replaceChildren(...activity.slice(0, 3).map(eventNode));
+  $("activity-count").textContent = activity.length;
+  $("recent-activity").hidden = activity.length === 0;
+  $("no-activity").hidden = filtered.length !== 0;
+  $("no-activity").textContent = activity.length
+    ? "No events match your search."
+    : "No activity yet. Add a target to start recording its history.";
+}
 function setText(id, message) {
   const node = $(id);
   if (node.textContent !== message) node.textContent = message;
@@ -108,6 +203,7 @@ async function request(url, options = {}, responseType = "json") {
     url === "/api/status" &&
     (!Array.isArray(body.targets) ||
       !Array.isArray(body.incidents) ||
+      !Array.isArray(body.activity) ||
       typeof body.server_time !== "number")
   ) {
     throw new RequestError(
@@ -220,7 +316,7 @@ function renderTargets() {
         element(
           "span",
           { className: "muted" },
-          `Every ${t.interval}s · ${t.last_check == null ? "Not checked" : new Date(t.last_check).toLocaleTimeString()}`,
+          `Every ${t.interval}s · ${t.last_check == null ? "Not checked" : date(t.last_check)}`,
         ),
         element(
           "div",
@@ -250,14 +346,22 @@ function renderIncidents() {
         {
           className: `badge ${i.outcome === "ongoing" ? "down" : i.outcome === "recovered" ? "up" : "paused"}`,
         },
-        i.outcome,
+        i.outcome === "ongoing"
+          ? "Still down"
+          : i.outcome === "recovered"
+            ? "Recovered"
+            : "Monitoring stopped",
       );
       return element(
         "tr",
         {},
         element("td", {}, i.target_name, element("small", {}, i.address)),
         element("td", {}, date(i.started_at)),
-        element("td", {}, date(i.ended_at)),
+        element(
+          "td",
+          {},
+          i.ended_at == null ? "Not yet recovered" : date(i.ended_at),
+        ),
         element(
           "td",
           {},
@@ -284,6 +388,7 @@ function render() {
   $("incident-count").textContent = data.incidents.length;
   renderTargets();
   renderIncidents();
+  renderActivity();
 }
 async function refresh() {
   const sequence = ++refreshSequence;
@@ -295,7 +400,7 @@ async function refresh() {
     loaded = true;
     setText("connection", "Connected · local session");
     $("connection").className = "connected";
-    $("updated").textContent = `Updated ${new Date().toLocaleTimeString()}`;
+    $("updated").textContent = `Updated ${date(Date.now())}`;
     $("connection-error").hidden = true;
     render();
   } catch (error) {
@@ -333,6 +438,7 @@ $("add-dialog").addEventListener("cancel", (event) => {
   if (busy) event.preventDefault();
 });
 $("search").addEventListener("input", renderTargets);
+$("activity-search").addEventListener("input", renderActivity);
 $("add-form").addEventListener("input", () => {
   $("form-error").hidden = true;
 });
@@ -443,52 +549,70 @@ $("remove-dialog").addEventListener("close", async () => {
   renderTargets();
 });
 function selectTab(view) {
-  for (const name of ["targets", "incidents"]) {
+  for (const name of ["targets", "activity", "incidents"]) {
     const selected = name === view;
     $(`${name}-tab`).setAttribute("aria-selected", String(selected));
     $(`${name}-tab`).tabIndex = selected ? 0 : -1;
     $(`${name}-panel`).hidden = !selected;
   }
 }
-for (const name of ["targets", "incidents"]) {
+for (const name of ["targets", "activity", "incidents"]) {
   $(`${name}-tab`).addEventListener("click", () => selectTab(name));
   $(`${name}-tab`).addEventListener("keydown", (event) => {
     if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
       event.preventDefault();
+      const views = ["targets", "activity", "incidents"];
       const next =
         event.key === "Home"
-          ? "targets"
+          ? views[0]
           : event.key === "End"
-            ? "incidents"
-            : name === "targets"
-              ? "incidents"
-              : "targets";
+            ? views[2]
+            : views[
+                (views.indexOf(name) + (event.key === "ArrowLeft" ? 2 : 1)) % 3
+              ];
       selectTab(next);
       $(`${next}-tab`).focus();
     }
   });
 }
+$("view-activity").addEventListener("click", () => {
+  selectTab("activity");
+  $("activity-tab").focus();
+});
 poll();
 
-let exporting = false;
-$("export").addEventListener("click", async (event) => {
-  event.preventDefault();
-  if (exporting) return;
-  exporting = true;
-  showError("");
-  $("export").setAttribute("aria-disabled", "true");
-  $("export").textContent = "Exporting…";
-  try {
-    const blob = await request("/api/incidents.csv", {}, "blob");
-    const url = URL.createObjectURL(blob);
-    const link = element("a", { href: url, download: "netcheck-downtime.csv" });
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  } catch (error) {
-    showError(error.message);
-  } finally {
-    exporting = false;
-    $("export").removeAttribute("aria-disabled");
-    $("export").textContent = "↓ Export full CSV";
-  }
-});
+function attachExport(id, url, filename, label) {
+  let exporting = false;
+  $(id).addEventListener("click", async (event) => {
+    event.preventDefault();
+    if (exporting) return;
+    exporting = true;
+    showError("");
+    $(id).setAttribute("aria-disabled", "true");
+    $(id).textContent = "Exporting…";
+    try {
+      const blob = await request(url, {}, "blob");
+      const objectUrl = URL.createObjectURL(blob);
+      element("a", { href: objectUrl, download: filename }).click();
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    } catch (error) {
+      showError(error.message);
+    } finally {
+      exporting = false;
+      $(id).removeAttribute("aria-disabled");
+      $(id).textContent = label;
+    }
+  });
+}
+attachExport(
+  "export",
+  "/api/incidents.csv",
+  "netcheck-downtime.csv",
+  "↓ Export full CSV",
+);
+attachExport(
+  "activity-export",
+  "/api/activity.csv",
+  "netcheck-activity.csv",
+  "↓ Export activity",
+);

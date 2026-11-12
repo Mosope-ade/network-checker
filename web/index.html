@@ -46,19 +46,30 @@
         <div class="tabs" role="tablist" aria-label="Monitor views">
           <button
             id="targets-tab"
+            aria-label="Live targets"
             role="tab"
             aria-selected="true"
             aria-controls="targets-panel"
           >
-            Live targets <span id="target-count">0</span></button
+            Targets <span id="target-count">0</span></button
+          ><button
+            id="activity-tab"
+            role="tab"
+            aria-label="Activity log"
+            aria-selected="false"
+            aria-controls="activity-panel"
+            tabindex="-1"
+          >
+            Activity <span id="activity-count">0</span></button
           ><button
             id="incidents-tab"
+            aria-label="Downtime log"
             role="tab"
             aria-selected="false"
             aria-controls="incidents-panel"
             tabindex="-1"
           >
-            Downtime log <span id="incident-count">0</span>
+            Downtime <span id="incident-count">0</span>
           </button>
         </div>
         <span id="updated" class="muted">Waiting for first update</span>
@@ -84,6 +95,46 @@
           </p>
           <button id="empty-add" class="primary">Add your first target</button>
         </div>
+        <section id="recent-activity" hidden aria-labelledby="recent-title">
+          <div class="tools">
+            <h2 id="recent-title">Recent activity</h2>
+            <button id="view-activity">View full activity log</button>
+          </div>
+          <ol id="recent-events" class="event-list"></ol>
+        </section>
+      </section>
+      <section
+        id="activity-panel"
+        role="tabpanel"
+        aria-labelledby="activity-tab"
+        hidden
+      >
+        <div class="tools">
+          <div>
+            <h2>What happened, and when</h2>
+            <p class="muted time-zone"></p>
+            <p class="muted">
+              Latest first · up to 1,000 events · full history available in CSV
+            </p>
+          </div>
+          <a
+            id="activity-export"
+            class="button"
+            href="/api/activity.csv"
+            download
+            >↓ Export activity</a
+          >
+        </div>
+        <label class="activity-search-label"
+          >Find an event<input
+            id="activity-search"
+            type="search"
+            placeholder="Search by target, event, or time"
+        /></label>
+        <ol id="activity-events" class="event-list"></ol>
+        <p id="no-activity" class="empty">
+          No activity yet. Add a target to start recording its history.
+        </p>
       </section>
       <section
         id="incidents-panel"
@@ -104,11 +155,11 @@
             <thead>
               <tr>
                 <th>Target</th>
-                <th>Started</th>
-                <th>Ended</th>
+                <th>Down since</th>
+                <th>Recovered / stopped</th>
                 <th>Duration</th>
                 <th>Outcome</th>
-                <th>Reason</th>
+                <th>What happened</th>
               </tr>
             </thead>
             <tbody id="incidents"></tbody>
@@ -118,8 +169,8 @@
           No downtime recorded. Confirmed outages will appear here.
         </p>
         <p class="note">
-          Times use your browser’s timezone. Interrupted means monitoring
-          stopped before recovery was confirmed.
+          <span class="time-zone"></span> · “Monitoring stopped” means the
+          outage was not confirmed recovered. Unobserved time is excluded.
         </p>
       </section>
       <footer>

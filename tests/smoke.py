@@ -1,5 +1,6 @@
 """Real-ping API regression checks with isolated storage and caller-supplied failure target."""
 import json
+from contextlib import closing
 import os
 from pathlib import Path
 import socket
@@ -64,6 +65,7 @@ class MonitorTest(unittest.TestCase):
 
     def test_no_preset_targets_and_removed_configuration_path(self):
         self.assertEqual(self.request('/api/status')['targets'], [])
+        self.assertEqual(self.request('/api/status')['activity'], [])
         for flag in ['--daemon','--config']:
             result = subprocess.run([str(ROOT/'target/debug/netcheck'),flag],capture_output=True,timeout=5)
             self.assertEqual(result.returncode,2)
@@ -92,13 +94,26 @@ class MonitorTest(unittest.TestCase):
         with error.exception as response:
             self.assertEqual(response.code,400)
             self.assertNotIn('deserialize',json.load(response)['error']['message'])
-        with sqlite3.connect(self.db) as connection: connection.execute('DROP TABLE incidents')
+        with closing(sqlite3.connect(self.db)) as connection, connection: connection.execute('DROP TABLE incidents')
         with self.assertRaises(urllib.error.HTTPError) as error: self.request('/api/status')
         with error.exception as response:
             body=json.load(response)
             self.assertEqual(response.code,500)
             self.assertNotIn('incidents',body['error']['message'])
             self.assertNotIn('SQL',body['error']['message'])
+
+    def test_slow_streamed_export_does_not_block_live_probe_writes(self):
+        self.request('/api/targets',dict(name='Export concurrency check',address=LOOPBACK,interval=1,failure_threshold=2,recovery_threshold=2))
+        state=self.wait_for(lambda state:state['targets'][0]['status'] in ['up','error'])
+        if state['targets'][0]['status']=='error': self.skipTest('ICMP permissions are required for the export concurrency check')
+        with closing(sqlite3.connect(self.db)) as connection, connection:
+            connection.executemany("INSERT INTO incidents(target_id,target_name,address,started_at,ended_at,outcome,reason) VALUES(999,'Export history',?,1000,2000,'recovered',?)",((LOOPBACK,'Historical outage detail. '*12) for _ in range(50000)))
+        before=self.request('/api/status')['targets'][0]['sent']
+        # Leave a multi-megabyte response unread, applying client backpressure.
+        with urllib.request.urlopen(self.base+'/api/incidents.csv',timeout=5) as download:
+            self.assertIn('text/csv',download.headers['Content-Type'])
+            self.assertEqual(download.headers['Transfer-Encoding'],'chunked')
+            self.wait_for(lambda state:state['targets'][0]['sent']>before,timeout=4)
 
     def test_complete_workflow(self):
         unreachable = os.environ.get('NETCHECK_TEST_UNREACHABLE')
@@ -108,6 +123,8 @@ class MonitorTest(unittest.TestCase):
             self.request('/api/targets', dict(config, address=ip, name=name))
         status = self.wait_for(lambda s: len(s['incidents']) == 1 and all(t['sent'] >= 2 for t in s['targets']))
         self.assertEqual([t['status'] for t in status['targets']], ['up','up','down'])
+        self.assertTrue(any(event['kind']=='outage_confirmed' and event['outage_started_at'] is not None for event in status['activity']))
+        self.assertTrue(all(isinstance(event['timestamp'],int) and event['message'] for event in status['activity']))
         self.assertGreater(status['targets'][0]['sent'], status['targets'][2]['sent'])
         self.expect_error(400,'/api/targets',dict(config,address='garbage',name='invalid'))
         self.expect_error(409,'/api/targets',dict(config,address=LOOPBACK,name='duplicate'))
@@ -119,6 +136,7 @@ class MonitorTest(unittest.TestCase):
         state = self.request('/api/status')
         self.assertEqual(state['targets'][2]['status'], 'paused')
         self.assertEqual(state['incidents'][0]['outcome'], 'interrupted')
+        self.assertTrue(any(event['kind']=='paused' for event in state['activity']))
         sent = state['targets'][2]['sent']
         generation = state['targets'][2]['generation']
         # Repeating an explicit state change is safe; it must not toggle monitoring back on.
@@ -136,7 +154,7 @@ class MonitorTest(unittest.TestCase):
             self.assertEqual(self.request('/api/status')['incidents'][0]['outcome'],'ongoing')
         # SIGTERM closes incidents and stops probe tasks without needing a restart.
         self.process.terminate(); self.process.wait(timeout=10)
-        with sqlite3.connect(self.db) as connection:
+        with closing(sqlite3.connect(self.db)) as connection, connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM incidents WHERE ended_at IS NULL").fetchone()[0],0)
         self.start_server()
         state = self.request('/api/status')
@@ -147,6 +165,11 @@ class MonitorTest(unittest.TestCase):
         csv = self.request('/api/incidents.csv').decode()
         self.assertIn("'=Unreachable",csv)
         self.assertIn('interrupted', csv)
+        events=self.request('/api/activity.csv').decode()
+        self.assertIn('timestamp_utc',events)
+        self.assertIn('outage_confirmed',events)
+        self.assertIn('removed',events)
+        self.assertIn('session_stopped',events)
         print('Verified concurrent user-supplied targets, thresholds, idempotent pause/resume, ownership, shutdown, restart, CSV and input/origin checks.')
 
 if __name__ == '__main__': unittest.main()

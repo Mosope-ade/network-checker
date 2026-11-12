@@ -1,3 +1,5 @@
+mod activity;
+mod csv;
 mod dashboard;
 mod ping;
 mod store;
@@ -60,6 +62,7 @@ fn startup_message(error: &(dyn std::error::Error + 'static), port: u16) -> Stri
         return match error.kind() {
             std::io::ErrorKind::AddrInUse=>format!("Port {port} is already in use. Close the other NetCheck instance or choose a different port with --port."),
             std::io::ErrorKind::PermissionDenied=>"NetCheck does not have permission to use this port or database folder. Check access or choose another location with --database.".into(),
+            std::io::ErrorKind::InvalidInput=>error.to_string(),
             std::io::ErrorKind::NotFound=>"The database location could not be found. Check the path supplied with --database.".into(),
             _=>"NetCheck could not start. Check the error details and the selected port and database path.".into(),
         };
