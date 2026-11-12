@@ -46,20 +46,76 @@ const date = (ms) =>
         minute: "2-digit",
         second: "2-digit",
       });
+function setText(id, message) {
+  const node = $(id);
+  if (node.textContent !== message) node.textContent = message;
+}
 function showError(message) {
-  $("error").textContent = message;
+  setText("error-message", message);
   $("error").hidden = !message;
 }
-async function request(url, options = {}) {
-  const response = await fetch(url, {
-    ...options,
-    signal: AbortSignal.timeout(8000),
-  });
-  if (!response.ok)
-    throw new Error(
-      (await response.text()) || `Request failed (${response.status})`,
+class RequestError extends Error {
+  constructor(message, code = 0) {
+    super(message);
+    this.code = code;
+  }
+}
+async function request(url, options = {}, responseType = "json") {
+  let response;
+  try {
+    response = await fetch(url, {
+      ...options,
+      signal: AbortSignal.timeout(8000),
+    });
+  } catch (error) {
+    const message =
+      error.name === "TimeoutError" || error.name === "AbortError"
+        ? "NetCheck took too long to respond. The change may have been saved; check the target list before trying again."
+        : "Cannot reach NetCheck. Make sure the app is running, then try again.";
+    throw new RequestError(message);
+  }
+  if (response.status === 204) return null;
+  if (response.ok && responseType === "blob") {
+    if (!response.headers.get("Content-Type")?.startsWith("text/csv"))
+      throw new RequestError(
+        "The export was not a CSV file. Refresh the page and try again.",
+        502,
+      );
+    try {
+      return await response.blob();
+    } catch {
+      throw new RequestError(
+        "The export did not finish. Check the connection to NetCheck and try again.",
+      );
+    }
+  }
+  let body;
+  try {
+    body = await response.json();
+  } catch {
+    throw new RequestError(
+      "NetCheck returned an unreadable response. Refresh the page. If it continues, restart the app.",
+      502,
     );
-  return response.status === 204 ? null : response.json();
+  }
+  if (!response.ok)
+    throw new RequestError(
+      body?.error?.message ||
+        "The request could not be completed. Refresh the page and try again.",
+      response.status,
+    );
+  if (
+    url === "/api/status" &&
+    (!Array.isArray(body.targets) ||
+      !Array.isArray(body.incidents) ||
+      typeof body.server_time !== "number")
+  ) {
+    throw new RequestError(
+      "The monitoring data could not be read. Refresh the page; if it continues, check the server log.",
+      502,
+    );
+  }
+  return body;
 }
 function isStale(target) {
   return (
@@ -237,17 +293,24 @@ async function refresh() {
     data = result;
     serverOffset = data.server_time - Date.now();
     loaded = true;
-    $("connection").textContent = "Connected · local session";
+    setText("connection", "Connected · local session");
     $("connection").className = "connected";
     $("updated").textContent = `Updated ${new Date().toLocaleTimeString()}`;
     $("connection-error").hidden = true;
     render();
   } catch (error) {
     if (sequence !== refreshSequence) return;
-    $("connection").textContent = "Disconnected · retrying";
+    setText(
+      "connection",
+      error.code >= 400
+        ? "Data unavailable · retrying"
+        : "Disconnected · retrying",
+    );
     $("connection").className = "";
-    $("connection-error").textContent =
-      `Cannot reach NetCheck. Displayed results may be stale. Keep the server running. ${error.message}`;
+    setText(
+      "connection-error",
+      `${error.message} Displayed results are from the last successful update.`,
+    );
     $("connection-error").hidden = false;
   }
 }
@@ -270,6 +333,10 @@ $("add-dialog").addEventListener("cancel", (event) => {
   if (busy) event.preventDefault();
 });
 $("search").addEventListener("input", renderTargets);
+$("add-form").addEventListener("input", () => {
+  $("form-error").hidden = true;
+});
+$("error-dismiss").addEventListener("click", () => showError(""));
 $("add-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const lines = $("addresses")
@@ -318,7 +385,7 @@ $("add-form").addEventListener("submit", async (event) => {
   } catch (error) {
     $("addresses").value = lines.slice(completed).join("\n");
     $("form-error").textContent =
-      `${completed ? `${completed} target(s) added. ` : ""}${error.message}`;
+      `${completed ? `${completed} target(s) added. ` : ""}Target ${completed + 1} could not be added. ${error.message}`;
     $("form-error").hidden = false;
   } finally {
     busy = false;
@@ -402,3 +469,26 @@ for (const name of ["targets", "incidents"]) {
   });
 }
 poll();
+
+let exporting = false;
+$("export").addEventListener("click", async (event) => {
+  event.preventDefault();
+  if (exporting) return;
+  exporting = true;
+  showError("");
+  $("export").setAttribute("aria-disabled", "true");
+  $("export").textContent = "Exporting…";
+  try {
+    const blob = await request("/api/incidents.csv", {}, "blob");
+    const url = URL.createObjectURL(blob);
+    const link = element("a", { href: url, download: "netcheck-downtime.csv" });
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (error) {
+    showError(error.message);
+  } finally {
+    exporting = false;
+    $("export").removeAttribute("aria-disabled");
+    $("export").textContent = "↓ Export full CSV";
+  }
+});

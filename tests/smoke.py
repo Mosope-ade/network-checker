@@ -68,6 +68,38 @@ class MonitorTest(unittest.TestCase):
             result = subprocess.run([str(ROOT/'target/debug/netcheck'),flag],capture_output=True,timeout=5)
             self.assertEqual(result.returncode,2)
 
+    def test_errors_are_clear_json_messages(self):
+        for path,data,method,expected_code in [
+            ('/api/targets',{},'POST',422),
+            ('/api/targets',{'name':'router','address':'invalid','interval':1,'failure_threshold':1,'recovery_threshold':1},'POST',400),
+            ('/api/targets/999/state',{'enabled':False},'PUT',404),
+            ('/api/targets/999/state',{'enabled':'wrong'},'PUT',422),
+            ('/api/status',None,'POST',405),
+            ('/api/does-not-exist',None,'GET',404),
+            ('/api/targets',{'name':'x'*20000},'POST',413),
+        ]:
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                self.request(path,data,method=method)
+            with error.exception as response:
+                self.assertEqual(response.code,expected_code)
+                self.assertIn('application/json',response.headers['Content-Type'])
+                body=json.load(response)
+                self.assertEqual(body['error']['code'],expected_code)
+                self.assertTrue(body['error']['message'])
+                self.assertNotIn('deserialize',body['error']['message'])
+        malformed=urllib.request.Request(self.base+'/api/targets',data=b'{',headers={'Content-Type':'application/json'})
+        with self.assertRaises(urllib.error.HTTPError) as error: urllib.request.urlopen(malformed,timeout=5)
+        with error.exception as response:
+            self.assertEqual(response.code,400)
+            self.assertNotIn('deserialize',json.load(response)['error']['message'])
+        with sqlite3.connect(self.db) as connection: connection.execute('DROP TABLE incidents')
+        with self.assertRaises(urllib.error.HTTPError) as error: self.request('/api/status')
+        with error.exception as response:
+            body=json.load(response)
+            self.assertEqual(response.code,500)
+            self.assertNotIn('incidents',body['error']['message'])
+            self.assertNotIn('SQL',body['error']['message'])
+
     def test_complete_workflow(self):
         unreachable = os.environ.get('NETCHECK_TEST_UNREACHABLE')
         if not unreachable: self.skipTest('Set NETCHECK_TEST_UNREACHABLE to a host IP you know will not reply')
@@ -100,6 +132,7 @@ class MonitorTest(unittest.TestCase):
         for port in [self.port,0]:
             result=subprocess.run([str(ROOT/'target/debug/netcheck'),'--port',str(port),'--database',self.db],capture_output=True,timeout=5)
             self.assertNotEqual(result.returncode,0)
+            self.assertIn(b'already',result.stdout+result.stderr)
             self.assertEqual(self.request('/api/status')['incidents'][0]['outcome'],'ongoing')
         # SIGTERM closes incidents and stops probe tasks without needing a restart.
         self.process.terminate(); self.process.wait(timeout=10)

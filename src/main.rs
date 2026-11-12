@@ -29,11 +29,11 @@ async fn main() {
                 };
                 if flag == "--port" {
                     port = value.parse().unwrap_or_else(|_| {
-                        error!("Invalid port");
+                        error!("Enter a whole-number port from 0 to 65535. Use 0 to choose an available port automatically.");
                         std::process::exit(2)
                     });
                 } else if value.trim().is_empty() {
-                    error!("Database path cannot be empty");
+                    error!("The database path cannot be empty. Supply a writable file path after --database.");
                     std::process::exit(2);
                 } else {
                     database = value;
@@ -50,7 +50,39 @@ async fn main() {
         }
     }
     if let Err(error) = dashboard::run(port, &database).await {
-        error!(%error, "NetCheck failed");
+        error!(details=%error, "{}", startup_message(error.as_ref(), port));
         std::process::exit(1);
+    }
+}
+
+fn startup_message(error: &(dyn std::error::Error + 'static), port: u16) -> String {
+    if let Some(error) = error.downcast_ref::<std::io::Error>() {
+        return match error.kind() {
+            std::io::ErrorKind::AddrInUse=>format!("Port {port} is already in use. Close the other NetCheck instance or choose a different port with --port."),
+            std::io::ErrorKind::PermissionDenied=>"NetCheck does not have permission to use this port or database folder. Check access or choose another location with --database.".into(),
+            std::io::ErrorKind::NotFound=>"The database location could not be found. Check the path supplied with --database.".into(),
+            _=>"NetCheck could not start. Check the error details and the selected port and database path.".into(),
+        };
+    }
+    if let Some(error) = error.downcast_ref::<rusqlite::Error>() {
+        return match error {
+            rusqlite::Error::ToSqlConversionFailure(source) if source.downcast_ref::<std::fs::TryLockError>().is_some_and(|error|matches!(error,std::fs::TryLockError::WouldBlock)) => "This database is already being monitored by another NetCheck process. Open that instance or stop it before starting again.".into(),
+            rusqlite::Error::FromSqlConversionFailure(..)=>"Saved monitoring settings could not be read. Preserve the database and check the error details, or choose a different database with --database.".into(),
+            _=>"NetCheck could not open its monitoring database. Check the path, file permissions, and error details. Preserve existing data before attempting repairs.".into(),
+        };
+    }
+    "NetCheck could not start. Check the error details for the selected local port and database."
+        .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn startup_failures_explain_the_next_action() {
+        let error = std::io::Error::from(std::io::ErrorKind::AddrInUse);
+        assert!(startup_message(&error, 8787).contains("--port"));
+        let error = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        assert!(startup_message(&error, 8787).contains("permission"));
     }
 }

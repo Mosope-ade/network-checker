@@ -6,5 +6,5 @@ plan.md
 
 /node_modules/
 
-# Machine-specific targets and optional notification credentials
+# Retired local configuration files are never loaded
 /config/*.toml

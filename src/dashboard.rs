@@ -18,6 +18,20 @@ type Shared = Arc<Mutex<Store>>;
 type ApiError = (StatusCode, String);
 fn db_error(e: rusqlite::Error) -> ApiError {
     tracing::error!(%e, "database operation failed");
+    if let rusqlite::Error::SqliteFailure(error, _) = &e {
+        if error.code == rusqlite::ErrorCode::DiskFull {
+            return (
+                StatusCode::INSUFFICIENT_STORAGE,
+                "Monitoring storage is full.".into(),
+            );
+        }
+        if matches!(
+            error.code,
+            rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+        ) {
+            return (StatusCode::LOCKED, "Monitoring storage is busy.".into());
+        }
+    }
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         "Could not save or read monitoring data. Check the server log.".into(),
@@ -137,6 +151,7 @@ async fn protect(
     next: Next,
     local: std::net::SocketAddr,
 ) -> Response {
+    let state_request = request.uri().path().ends_with("/state");
     let hosts = [local.to_string(), format!("localhost:{}", local.port())];
     let host = request
         .headers()
@@ -144,17 +159,60 @@ async fn protect(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     if !hosts.iter().any(|h| h == host) {
-        return (StatusCode::FORBIDDEN, "Local access only").into_response();
+        return secure(error_response(
+            StatusCode::FORBIDDEN,
+            "Open NetCheck using the local URL printed in the terminal.",
+        ));
     }
     if let Some(origin) = request.headers().get(header::ORIGIN) {
         let valid = hosts
             .iter()
             .any(|h| origin.as_bytes() == format!("http://{h}").as_bytes());
         if !valid {
-            return (StatusCode::FORBIDDEN, "Cross-origin requests are disabled").into_response();
+            return secure(error_response(StatusCode::FORBIDDEN,"This request came from a different site. Open NetCheck using its local URL and try again."));
         }
     }
-    let mut response = next.run(request).await;
+    let response = next.run(request).await;
+    secure(normalize_error(response, state_request).await)
+}
+fn error_response(status: StatusCode, message: &str) -> Response {
+    (
+        status,
+        Json(serde_json::json!({"error":{"code":status.as_u16(),"message":message}})),
+    )
+        .into_response()
+}
+async fn normalize_error(response: Response, state_request: bool) -> Response {
+    let status = response.status();
+    if !status.is_client_error() && !status.is_server_error() {
+        return response;
+    }
+    let (parts, body) = response.into_parts();
+    let bytes = axum::body::to_bytes(body, 16 * 1024)
+        .await
+        .unwrap_or_default();
+    let original = String::from_utf8_lossy(&bytes);
+    let message=match status {
+        StatusCode::INSUFFICIENT_STORAGE => "There is not enough disk space to save monitoring data. Free space on the database drive, then try again.",
+        StatusCode::LOCKED => "The monitoring database is busy. Wait a moment and try again. Check whether another program is holding it open.",
+        StatusCode::NOT_FOUND => "This target or page no longer exists. Refresh the page to see the current targets.",
+        StatusCode::METHOD_NOT_ALLOWED => "This operation is not supported. Refresh the page to load the current app and try again.",
+        StatusCode::PAYLOAD_TOO_LARGE => "This request is too large. Add fewer targets at a time and keep names under 80 characters.",
+        StatusCode::UNSUPPORTED_MEDIA_TYPE => "The request format was not accepted. Refresh the page and try again.",
+        StatusCode::UNPROCESSABLE_ENTITY if state_request => "The monitoring state was not valid. Refresh the page and try Pause or Resume again.",
+        StatusCode::UNPROCESSABLE_ENTITY => "Check that each target has a name and IP address, and that the interval and thresholds are whole numbers.",
+        StatusCode::BAD_REQUEST if original.starts_with("Failed") || original.starts_with("Invalid URL") => "The request could not be read. Refresh the page and check the values before trying again.",
+        _ if status.is_server_error() => "NetCheck could not read or save local monitoring data. Try again. If the problem continues, check the server log before restarting.",
+        _ if original.trim().is_empty() => "The request could not be completed. Refresh the page and try again.",
+        _ => original.as_ref(),
+    };
+    let mut response = error_response(status, message);
+    if let Some(allow) = parts.headers.get(header::ALLOW) {
+        response.headers_mut().insert(header::ALLOW, allow.clone());
+    }
+    response
+}
+fn secure(mut response: Response) -> Response {
     let headers = response.headers_mut();
     headers.insert(header::CONTENT_SECURITY_POLICY,"default-src 'self'; script-src 'self'; style-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'".parse().unwrap());
     headers.insert(header::X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());
@@ -344,9 +402,10 @@ async fn schedule(s: Shared) {
                     loop {
                         interval.tick().await;
                         let result = crate::ping::probe(address).await;
+                        let observed_at = crate::store::now();
                         if let Err((_, error)) = with_db(state.clone(), move |store| {
                             store
-                                .record(target.id, generation, result, crate::store::now())
+                                .record(target.id, generation, result, observed_at)
                                 .map_err(db_error)
                         })
                         .await
@@ -365,6 +424,19 @@ async fn schedule(s: Shared) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn disk_full_and_database_busy_have_distinct_recoverable_errors() {
+        let full = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_FULL),
+            None,
+        );
+        assert_eq!(db_error(full).0, StatusCode::INSUFFICIENT_STORAGE);
+        let busy = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+            None,
+        );
+        assert_eq!(db_error(busy).0, StatusCode::LOCKED);
+    }
     #[test]
     fn exports_formula_like_names_as_literals() {
         assert_eq!(csv_cell("=1+1"), "\"'=1+1\"");

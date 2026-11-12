@@ -94,11 +94,8 @@ impl Store {
                 .truncate(false)
                 .open(path)
                 .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-            file.try_lock().map_err(|e| {
-                rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(format!(
-                    "Database is already owned by another NetCheck process: {e}"
-                ))))
-            })?;
+            file.try_lock()
+                .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
             Some(file)
         };
         let db = Connection::open(path)?;
@@ -230,6 +227,9 @@ impl Store {
         if !t.enabled || t.generation != generation {
             return Ok(());
         }
+        if let Err(error) = &result {
+            tracing::debug!(target=id,details=%error,"ICMP probe failed");
+        }
         let tx = self.db.transaction()?;
         if t.last_check.is_some_and(|previous| {
             at < previous || at.saturating_sub(previous) > (t.interval as i64 + 7) * 1000
@@ -240,7 +240,7 @@ impl Store {
         if matches!(&result, Err(ProbeError::Unavailable(_))) {
             tx.execute("UPDATE incidents SET ended_at=MAX(started_at,?),outcome='interrupted' WHERE target_id=? AND ended_at IS NULL", params![t.last_check.unwrap_or(at),t.id])?;
             t.status = "error".into();
-            t.error = result.err().map(|e| e.to_string());
+            t.error = result.err().map(|error| error.user_message().to_owned());
             t.latency_ms = None;
             t.tracker = Tracker::default();
             tx.execute(
@@ -260,7 +260,10 @@ impl Store {
         t.sent = t.sent.saturating_add(1);
         t.last_check = Some(at);
         t.latency_ms = result.as_ref().ok().copied();
-        t.error = result.as_ref().err().map(|e| e.to_string());
+        t.error = result
+            .as_ref()
+            .err()
+            .map(|error| error.user_message().to_owned());
         if result.is_ok() {
             t.received = t.received.saturating_add(1);
         }

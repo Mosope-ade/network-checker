@@ -4,7 +4,7 @@ A local GUI for pinging one or multiple network endpoints simultaneously and log
 
 ## Run
 
-Install Rust 1.89 or newer, then run:
+Install Rust and Cargo (verified with Rust 1.95), then run:
 
 ```sh
 cargo run
@@ -47,6 +47,14 @@ Only the web port and local database path are CLI options. The retired `--daemon
 The server binds to the operating system's IPv4 loopback constant. This is the local application listener, never a ping target. Expected Host and same-origin checks restrict access to the local browser application; it has no remote/multi-user mode. Database ownership is exclusive, including through file aliases, so a second NetCheck process cannot change an active monitor's state. Back up SQLite with its backup API or while NetCheck is stopped.
 
 SQLite work runs on blocking workers rather than the asynchronous probe runtime. CSV exports currently materialize in memory and hold the storage mutex while reading; very large logs can temporarily delay writes. Export during quiet periods for unusually large histories. Network filesystems are not supported for the database owner lock.
+
+## Error handling
+
+Validation errors remain beside the target form and identify which batch item failed. Action errors persist across polling until dismissed or another action starts. Connection and storage errors are shown separately, with old results explicitly identified as stale. A timed-out change may already have been saved; check the target list before retrying. Pause/resume requests set an explicit state, so retrying them cannot accidentally toggle it back.
+
+API errors have a consistent JSON `error` object containing a numeric `code` and a readable `message`. Internal database and framework details stay out of those responses. The UI handles failed and unreadable responses, and failed exports show an error instead of downloading a bogus CSV. Startup messages explain occupied ports, database ownership conflicts, access problems, and invalid saved settings.
+
+For detailed local probe diagnostics, run with `RUST_LOG=debug`; normal operation shows short user-facing explanations.
 
 ## ICMP permissions
 

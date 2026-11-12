@@ -11,6 +11,8 @@ pub enum ProbeError {
     Unavailable(String),
     #[error("{0}")]
     NoReply(String),
+    #[error("ICMP request timed out")]
+    TimedOut,
 }
 
 pub async fn probe(ip: IpAddr) -> Result<f64, ProbeError> {
@@ -41,7 +43,24 @@ pub async fn probe(ip: IpAddr) -> Result<f64, ProbeError> {
         {
             Err(ProbeError::Unavailable(error.to_string()))
         }
+        Ok(Err(surge_ping::SurgeError::Timeout { .. })) => Err(ProbeError::TimedOut),
         Ok(Err(error)) => Err(ProbeError::NoReply(error.to_string())),
-        Err(_) => Err(ProbeError::NoReply("Request timeout".into())),
+        Err(_) => Err(ProbeError::TimedOut),
+    }
+}
+
+impl ProbeError {
+    pub fn user_message(&self) -> &'static str {
+        match self {
+            Self::Unavailable(_) => {
+                "Local ICMP probes are unavailable. Check this machine's ping permissions."
+            }
+            Self::TimedOut => {
+                "No reply within two seconds. Check the host, route, and whether ping is allowed."
+            }
+            Self::NoReply(_) => {
+                "No ICMP reply. The host or route may be unavailable, or ping may be blocked."
+            }
+        }
     }
 }

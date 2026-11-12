@@ -647,7 +647,7 @@ dialog input {
   height: 8.8px;
 }
 .probe.h3 {
-  height: 13.200000000000001px;
+  height: 13.2px;
 }
 .probe.h4 {
   height: 17.6px;
@@ -656,10 +656,10 @@ dialog input {
   height: 22px;
 }
 .probe.h6 {
-  height: 26.400000000000002px;
+  height: 26.4px;
 }
 .probe.h7 {
-  height: 30.800000000000004px;
+  height: 30.8px;
 }
 .probe.h8 {
   height: 35.2px;
@@ -680,4 +680,18 @@ dialog input {
 
 .badge.stale {
   color: var(--amber);
+}
+
+#error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+@media (max-width: 420px) {
+  #error {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }

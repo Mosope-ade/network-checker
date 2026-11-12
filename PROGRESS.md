@@ -22,3 +22,21 @@ Corrections:
 - Display delayed monitoring explicitly and prioritize ongoing incidents in the log. Validate unicast target input, normalize equivalent address forms, and guard CSV formula prefixes including leading whitespace.
 
 Validation and any remaining limits are recorded after the audit run. CSV exports still materialize in memory and hold the storage mutex during reading; unusually large histories can delay writes. Database locks require a local filesystem. Monitoring cannot establish events between samples. Browser verification is scoped to Chrome.
+
+## Error handling and dependency follow-up
+
+- Added a consistent JSON error envelope for API validation, malformed JSON, unknown targets/routes, incorrect methods, oversized requests, blocked origins, busy/full storage, and internal failures. Internal SQL and framework details are not sent to the browser.
+- Added actionable startup messages, friendly ICMP explanations, separate connection/data-unavailable banners, persistent/dismissible action errors, malformed-response handling, timeout guidance, and in-app CSV export failures. Repeated polling no longer repeatedly rewrites identical live-region messages.
+- Capture probe observation timestamps before waiting for storage. Database ownership failures remain typed rather than inferred from an error string.
+- Updated Tokio to 1.53.3 for [RUSTSEC-2026-0386](https://rustsec.org/advisories/RUSTSEC-2026-0386.html). Updated rusqlite to 0.41.1 with libsqlite3-sys 0.39.1 for [RUSTSEC-2026-0459](https://rustsec.org/advisories/RUSTSEC-2026-0459.html). Read upstream release notes and validated the upgrades separately; the newer rusqlite requires reading SQLite counts as signed integers.
+- Queried all 129 registry package/version pairs from the final Rust lockfile against the [OSV API](https://api.osv.dev/v1/querybatch): no reported advisories after the updates. `npm audit` reported no vulnerabilities. This is a dated advisory check, not a guarantee against undiscovered vulnerabilities.
+
+## Verification
+
+- Reproduced the original ownership, malformed saved-settings and monitoring-gap defects with failing tests before correcting them. Reproduced the old plain-text error-response defect before introducing consistent JSON errors.
+- 16 Rust unit tests passed. Clippy passed with warnings denied. The final executable built successfully.
+- Two repository hygiene checks passed: no direct IP literals in source/frontend/tests/docs; no alternate configuration monitor or HTML-string rendering of user input.
+- Three API smoke tests cover startup/retired flags, complete actual IPv4/IPv6 ping/incident lifecycle and restart, validation, duplicates, Origin/Host checks, conflicting launches, idempotent state changes, SIGTERM, export retention and structured errors including malformed requests and internal storage failures.
+- Chrome browser checks cover bulk add, actual monitoring, escaped names, latency bars, delayed state updates across polling, pause/resume, cancel/remove, CSV downloads, error retention/dismissal, invalid addresses, failed exports without bogus downloads, unavailable storage, disconnect/reconnect, unreadable responses, request timeouts, dialogs, keyboard tabs and 320/768/1024/1440px layouts.
+- Inspected screenshots of desktop/mobile operation and validation, action and storage errors. No unexpected browser console errors were observed. Deliberately injected failed requests are recognized by the tests.
+- Checks were performed on Linux with Rust 1.95 and Google Chrome. No fresh Firefox, Safari or other-platform verification is claimed.

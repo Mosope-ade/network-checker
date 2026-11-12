@@ -49,10 +49,19 @@ const dns = require("node:dns/promises");
       viewport: { width: 1440, height: 1100 },
     });
     const errors = [];
+    const expectedFailedUrls = new Set();
+    let downloads = 0;
+    page.on("download", () => downloads++);
     page.on("pageerror", (error) => errors.push(error.message));
     page.on("console", (message) => {
-      if (message.type() === "error" || message.type() === "warning")
+      if (message.type() === "error" || message.type() === "warning") {
+        if (
+          expectedFailedUrls.has(message.location().url) &&
+          message.text().startsWith("Failed to load resource:")
+        )
+          return;
         errors.push(message.text());
+      }
     });
     await page.goto(base);
     await page.locator("#empty").waitFor({ state: "visible" });
@@ -173,6 +182,10 @@ const dns = require("node:dns/promises");
     );
     assert.deepEqual(errors, []);
     await page.getByRole("tab", { name: /Live targets/ }).click();
+    expectedFailedUrls.add(`${base}/api/targets/1/state`);
+    expectedFailedUrls.add(`${base}/api/status`);
+    expectedFailedUrls.add(`${base}/api/targets`);
+    expectedFailedUrls.add(`${base}/api/incidents.csv`);
     await page.route("**/api/targets/1/state", (route) => route.abort());
     await page
       .getByRole("button", { name: "Pause Local router", exact: true })
@@ -180,15 +193,121 @@ const dns = require("node:dns/promises");
     await page.locator("#error").waitFor({ state: "visible" });
     await page.waitForTimeout(1200);
     assert.equal(await page.locator("#error").isVisible(), true);
+    assert.match(
+      await page.locator("#error-message").textContent(),
+      /Make sure the app is running/,
+    );
+    await page.screenshot({
+      path: "/tmp/netcheck-action-error.png",
+      fullPage: true,
+    });
+    await page.getByRole("button", { name: "Dismiss error" }).click();
+    await page.waitForTimeout(1100);
+    assert.equal(await page.locator("#error").isVisible(), false);
+    await page
+      .getByRole("button", { name: "Add targets", exact: false })
+      .click();
+    await page
+      .getByLabel("Targets", { exact: true })
+      .fill("not-an-address, Router");
+    await page
+      .getByRole("button", { name: "Start monitoring", exact: true })
+      .click();
+    await page.locator("#form-error").waitFor({ state: "visible" });
+    assert.match(
+      await page.locator("#form-error").textContent(),
+      /valid IPv4 or IPv6 address/,
+    );
+    await page.screenshot({
+      path: "/tmp/netcheck-validation-error.png",
+      fullPage: true,
+    });
+    await page.getByRole("button", { name: "Close dialog" }).click();
+    await page.getByRole("tab", { name: /Downtime log/ }).click();
+    await page.route("**/api/incidents.csv", (route) =>
+      route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: {
+            code: 500,
+            message:
+              "Monitoring data could not be exported. Check the server log and try again.",
+          },
+        }),
+      }),
+    );
+    const previousDownloads = downloads;
+    await page.getByRole("link", { name: "Export full CSV" }).click();
+    await page.locator("#error").waitFor({ state: "visible" });
+    assert.match(
+      await page.locator("#error-message").textContent(),
+      /could not be exported/,
+    );
+    assert.equal(downloads, previousDownloads);
+    await page.route("**/api/status", (route) =>
+      route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: {
+            code: 503,
+            message:
+              "Monitoring data is temporarily unavailable. Try again shortly.",
+          },
+        }),
+      }),
+    );
+    await page.waitForFunction(() =>
+      document
+        .querySelector("#connection")
+        .textContent.includes("Data unavailable"),
+    );
+    await page.screenshot({
+      path: "/tmp/netcheck-storage-error.png",
+      fullPage: true,
+    });
     await page.route("**/api/status", (route) => route.abort());
     await page.locator("#connection-error").waitFor({ state: "visible" });
     await page.unroute("**/api/status");
     await page.locator("#connection-error").waitFor({ state: "hidden" });
-    // Aborted requests above are intentional; every error before them must be absent.
-    assert.deepEqual(
-      errors.filter((message) => !message.includes("net::ERR_FAILED")),
-      [],
+    await page.route("**/api/status", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: "not-json",
+      }),
     );
+    await page.waitForFunction(() =>
+      document
+        .querySelector("#connection-error")
+        .textContent.includes("unreadable response"),
+    );
+    await page.unroute("**/api/status");
+    await page.locator("#connection-error").waitFor({ state: "hidden" });
+    await page.getByRole("tab", { name: /Live targets/ }).click();
+    await page.unroute("**/api/targets/1/state");
+    await page.route("**/api/targets/1/state", async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 9000));
+      await route.abort().catch(() => {});
+    });
+    await page
+      .getByRole("button", { name: "Pause Local router", exact: true })
+      .click();
+    await page.waitForFunction(
+      () =>
+        document
+          .querySelector("#error-message")
+          .textContent.includes("took too long"),
+      null,
+      { timeout: 12000 },
+    );
+    assert.match(
+      await page.locator("#error-message").textContent(),
+      /change may have been saved/,
+    );
+    await page.waitForTimeout(1200);
+    assert.deepEqual(errors, []);
     console.log(
       "Browser checks passed: bulk add, real probes, latency bars, pause/resume, CSV, deletion/cancel, escaped names, search, keyboard navigation, four viewport sizes, delayed actions and disconnect recovery; no unexpected console errors.",
     );

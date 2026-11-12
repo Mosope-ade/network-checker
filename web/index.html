@@ -30,7 +30,12 @@
         <button id="add-open" class="primary">＋ Add targets</button>
       </div>
       <div id="connection-error" class="error" role="alert" hidden></div>
-      <div id="error" class="error" role="alert" hidden></div>
+      <div id="error" class="error" role="alert" hidden>
+        <span id="error-message"></span
+        ><button id="error-dismiss" type="button" aria-label="Dismiss error">
+          Dismiss
+        </button>
+      </div>
       <section class="summary" aria-label="Monitoring summary">
         <div><span>Monitored targets</span><strong id="total">—</strong></div>
         <div><span>Responding</span><strong id="up">—</strong></div>
@@ -90,7 +95,7 @@
           <p class="muted">
             Active incidents first · up to 1,000 recent records
           </p>
-          <a class="button" href="/api/incidents.csv" download
+          <a id="export" class="button" href="/api/incidents.csv" download
             >↓ Export full CSV</a
           >
         </div>
