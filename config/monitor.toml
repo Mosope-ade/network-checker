@@ -1,0 +1,25 @@
+[monitor]
+interval = 5              # seconds between checks
+failure_threshold = 3     # consecutive failures before declaring outage
+recovery_threshold = 3    # consecutive successes before declaring recovery
+
+# ─── Monitoring Targets ───────────────────────────────────
+
+[gateway]
+address = "10.255.153.56"   # the IP address to monitor as your gateway/router
+
+[internet]
+targets = ["1.1.1.1", "8.8.8.8"]
+
+[dns]
+hostname = "crates.io"
+
+# ─── Notification Channels ────────────────────────────────
+
+[alerts.system]
+enabled = true
+
+[alerts.telegram]
+enabled = false
+bot_token = ""
+chat_id = ""
