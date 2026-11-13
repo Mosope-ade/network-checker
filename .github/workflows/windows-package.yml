@@ -1,0 +1,90 @@
+name: Windows package
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-package-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-x64:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CARGO_TERM_COLOR: always
+      RUSTFLAGS: -C target-feature=+crt-static
+      BUILD_TARGET: x86_64-pc-windows-msvc
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install the verified Rust toolchain
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy --target $env:BUILD_TARGET
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rustup override set 1.95.0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rustc --version
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Check code quality
+        run: cargo clippy --locked --all-targets --target $env:BUILD_TARGET -- -D warnings
+
+      - name: Run unit tests on Windows
+        run: cargo test --locked --target $env:BUILD_TARGET
+
+      - name: Check target configuration hygiene
+        env:
+          PYTHONUTF8: '1'
+        run: python tests/hygiene.py
+
+      - name: Build standalone Windows executable
+        run: cargo build --release --locked --target $env:BUILD_TARGET
+
+      - name: Test the release executable
+        env:
+          PYTHONUTF8: '1'
+        run: python tests/package_smoke.py "target/$env:BUILD_TARGET/release/netcheck.exe"
+
+      - name: Package portable app
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $package = 'dist/NetCheck-windows-x64'
+          New-Item -ItemType Directory -Force $package | Out-Null
+          Copy-Item "target/$env:BUILD_TARGET/release/netcheck.exe" "$package/netcheck.exe"
+          Copy-Item packaging/windows/Start-NetCheck.cmd "$package/Start-NetCheck.cmd"
+          Copy-Item packaging/windows/README.txt "$package/README.txt"
+          $commit = git rev-parse HEAD
+          @("Commit: $commit", 'Target: x86_64-pc-windows-msvc', 'Toolchain: Rust 1.95.0') | Set-Content "$package/BUILD.txt"
+          $exeHash = (Get-FileHash "$package/netcheck.exe" -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$exeHash  netcheck.exe" | Set-Content "$package/SHA256SUMS.txt"
+          Compress-Archive -Path $package -DestinationPath dist/NetCheck-windows-x64.zip
+          $zipHash = (Get-FileHash dist/NetCheck-windows-x64.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$zipHash  NetCheck-windows-x64.zip" | Set-Content dist/SHA256SUMS.txt
+          @('## Windows x64 package', '', 'Download the **NetCheck-windows-x64** artifact below, extract the ZIP, then run **Start-NetCheck.cmd**.', '', "Commit: $commit", '', "ZIP SHA-256: $zipHash") | Add-Content $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload tested Windows package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: NetCheck-windows-x64
+          path: |
+            dist/NetCheck-windows-x64.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0

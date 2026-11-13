@@ -99,3 +99,13 @@ npm run test:browser
 ```
 
 To use an installed Chrome, set `CHROME_PATH` to its executable path. Browser checks use temporary storage and test bulk entry, actual probes, XSS resistance, delayed actions during polling, error retention, disconnect/reconnect, CSV, dialogs, keyboard navigation, and layouts at 320/768/1024/1440 pixels. Screenshots are written to the system temporary directory. Chrome verification does not imply Firefox or Safari verification.
+
+## Windows executable packages
+
+The **Windows package** GitHub Actions workflow runs on pushes to `main`, pull requests to `main`, and manual dispatch. It uses a native Windows x64 MSVC runner, Rust 1.95.0, locked dependencies, and a statically linked C runtime. Formatting, Clippy, unit tests, target hygiene and a real release-executable startup/ping/storage/export check must pass before upload.
+
+In GitHub, open **Actions → Windows package → a successful run → Artifacts → NetCheck-windows-x64**. Extract the downloaded artifact and its `NetCheck-windows-x64.zip`, then run **Start-NetCheck.cmd**. The ZIP contains the executable, launcher, instructions, source-commit identity and checksums. SQLite and the browser assets are embedded; Windows users do not need Rust or Node.js.
+
+The launcher stores user data in `%LOCALAPPDATA%\NetCheck`, so replacing the extracted app does not delete targets or history. The Windows database-owner lock uses a canonical-path `.owner.lock` sidecar because Windows byte-range locks on the database itself would block SQLite. Keep that sidecar in place. Unlike Unix's database inode lock, this does not protect separately named hard links to the same database; use one canonical database location.
+
+This produces a portable unsigned x64 ZIP, not an installer or installed Windows service. Native Actions results are the Windows verification; Linux checks alone do not prove Windows support. Artifact retention is 30 days; a GitHub Release is a separate publication step.

@@ -88,13 +88,8 @@ impl Store {
         let owner = if path == ":memory:" {
             None
         } else {
-            let file = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .open(path)
-                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            let file = owner_file(std::path::Path::new(path))
+                .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
             file.try_lock()
                 .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
             Some(file)
@@ -452,6 +447,23 @@ impl Store {
             params![encode_target(&t)?, t.id],
         )?;
         tx.commit()
+    }
+}
+// Windows file locks deny normal reads/writes on other handles, including SQLite's.
+// Lock a canonical-path sidecar there; Unix keeps its advisory inode lock on the DB.
+fn owner_file(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(windows)]
+    {
+        drop(options.open(path)?);
+        let mut lock_path = std::fs::canonicalize(path)?.into_os_string();
+        lock_path.push(".owner.lock");
+        options.open(lock_path)
+    }
+    #[cfg(not(windows))]
+    {
+        options.open(path)
     }
 }
 fn encode_target(t: &Target) -> rusqlite::Result<String> {
